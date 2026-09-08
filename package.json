@@ -1,6 +1,6 @@
 {
   "name": "opencode-shield-bash",
-  "version": "0.1.0",
+  "version": "0.0.0-development",
   "description": "opencode plugin that gates bash tool calls through a second-session allow/deny judge",
   "type": "module",
   "license": "MIT",
@@ -27,9 +27,30 @@
     "type": "git",
     "url": "git+https://github.com/acramsay/opencode-shield-bash.git"
   },
+  "release": {
+    "branches": ["main"],
+    "plugins": [
+      "@semantic-release/commit-analyzer",
+      "@semantic-release/release-notes-generator",
+      ["@semantic-release/changelog", { "changelogTitle": "# Changelog" }],
+      "@semantic-release/npm",
+      ["@semantic-release/git", {
+        "assets": ["package.json", "CHANGELOG.md"],
+        "message": "chore(release): ${nextRelease.version} [skip ci]"
+      }],
+      "@semantic-release/github"
+    ]
+  },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.18.29",
+    "@semantic-release/changelog": "^7.0.0",
+    "@semantic-release/commit-analyzer": "^13.0.1",
+    "@semantic-release/git": "^11.0.1",
+    "@semantic-release/github": "^12.0.9",
+    "@semantic-release/npm": "^13.1.5",
+    "@semantic-release/release-notes-generator": "^14.1.1",
     "@types/bun": "^1.4.0",
+    "semantic-release": "^25.0.9",
     "typescript": "^5.9.0"
   }
 }

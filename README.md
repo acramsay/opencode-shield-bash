@@ -113,7 +113,12 @@ Test-time env vars:
   `test/shield-bash.json`, which pins the fallback model)
 - `SHIELD_BASH_MODEL` — overrides both, with the same provider/model split as the plugin
 
-Publishing happens in CI on tag push only. Never publish from a local machine.
+## Releases
+
+Trunk-based: work merges to `main` and semantic-release runs in CI on every push to `main`.
+Conventional commits drive the bumps (`feat` minor, `fix` patch, breaking changes major); each
+release publishes to npm, updates `package.json` and `CHANGELOG.md`, and creates a GitHub release.
+Never push a `v*` tag by hand, and never publish from a local machine.
 
 ## License
 
