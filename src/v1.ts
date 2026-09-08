@@ -1,9 +1,8 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { createGate } from "./gate"
-import { POLICY_PROMPT } from "./lib"
 
 // Gates every bash command by prompting a second opencode session with the
-// policy in lib.ts.
+// configured safety policy.
 export const ShieldBash: Plugin = async ({ client, directory }) => {
   // Every root session gets its own judge child; sessions with a parent
   // (subagents) share their root's judge. Both maps memoize in-flight
@@ -77,12 +76,12 @@ export const ShieldBash: Plugin = async ({ client, directory }) => {
 
   const gate = await createGate({
     configDirectory: async () => (await client.path.get({ query: { directory } })).data?.config,
-    judge: async (command, sessionID, model) => {
+    judge: async (command, sessionID, model, prompt) => {
       const sessID = await ensureJudgeSession(await rootOf(sessionID))
       const response = await client.session.prompt({
         path: { id: sessID },
         body: {
-          system: POLICY_PROMPT,
+          system: prompt,
           parts: [{ type: "text", text: `Command: ${command}\nReturn the JSON verdict.` }] as const,
           model,
         } as never,
