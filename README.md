@@ -16,7 +16,7 @@ auto-shared. The judge transcript doubles as the audit trail.
 Add the package to your `opencode.json` plugin array:
 
 ```json
-{ "plugin": ["opencode-shield-bash"] }
+{ "plugin": ["@acramsay/opencode-shield-bash"] }
 ```
 
 opencode installs npm plugins with Bun at startup. No build step: the package ships
