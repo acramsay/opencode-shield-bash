@@ -1,7 +1,7 @@
 {
   "name": "@acramsay/opencode-shield-bash",
   "version": "1.0.1",
-  "description": "opencode plugin that gates bash tool calls through a second-session allow/deny judge",
+  "description": "opencode V2 and V1 plugin that gates shell tool calls through an allow/deny model judge",
   "type": "module",
   "license": "MIT",
   "main": "./src/index.ts",
@@ -11,7 +11,9 @@
   },
   "files": [
     "src/index.ts",
-    "src/lib.ts"
+    "src/lib.ts",
+    "src/gate.ts",
+    "src/v1.ts"
   ],
   "publishConfig": {
     "access": "public"
@@ -68,5 +70,8 @@
     "@types/bun": "^1.4.0",
     "semantic-release": "^25.0.9",
     "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "@opencode/plugin": "0.0.0-beta-19296"
   }
 }

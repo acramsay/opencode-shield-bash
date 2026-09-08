@@ -1,11 +1,17 @@
 # opencode-shield-bash
 
-[opencode](https://opencode.ai) plugin that gates every bash tool call through a second
-session. A judge session, prompted with a fixed policy, returns an allow/deny JSON verdict
+[opencode](https://opencode.ai) plugin that gates shell tool calls through a model judge.
+The judge, prompted with a fixed policy, returns an allow/deny JSON verdict
 before the command runs. Denials throw into the calling session, so the agent sees why the
 command was blocked.
 
-The judge session is created lazily as a child of the calling session's root, titled "Shield Bash"
+Supports OpenCode V2 beta and V1 1.18.29 or later from the same package.
+The V2 API dependency is pinned to `@opencode/plugin@0.0.0-beta-19296`.
+Keep this an exact version: a caret range can select the nonfunctional `0.0.0-reserved` package.
+V2 uses tool-free text generation to judge `shell` (and legacy `bash`) tool calls.
+It does not create judge sessions or store a judge transcript.
+
+On V1, the judge session is created lazily as a child of the calling session's root, titled "Shield Bash"
 — one judge per root session, shared by that root's subagent sessions. That
 matters for more than bookkeeping: it is reachable with the TUI's child-session navigation,
 stays out of the roots-only session list, is deleted with its parent, and is never
@@ -13,7 +19,13 @@ auto-shared. The judge transcript doubles as the audit trail.
 
 ## Install
 
-Add the package to your `opencode.json` plugin array:
+For V2, add the package to `plugins` in `opencode.json`:
+
+```json
+{ "plugins": ["@acramsay/opencode-shield-bash"] }
+```
+
+For V1 1.18.29 or later, use `plugin` instead:
 
 ```json
 { "plugin": ["@acramsay/opencode-shield-bash"] }
@@ -26,6 +38,8 @@ TypeScript, which Bun loads natively.
 
 The plugin reads `shield-bash.json` from your opencode config directory at runtime. It is
 user-side configuration and never ships with the package.
+On V2, this is `$XDG_CONFIG_HOME/opencode`, or `~/.config/opencode` when unset.
+On V1, the server supplies the config directory.
 
 ```json
 {
@@ -39,11 +53,13 @@ user-side configuration and never ships with the package.
 | --- | --- |
 | `providerID` | provider that serves the judge model |
 | `modelID` | model that judges the commands |
-| `failure` | behavior when the judge session errors: `deny` (default), `allow`, or `ask` |
+| `failure` | behavior when the judge errors: `deny` (default), `allow`, or `ask` |
 
-`ask` defers to opencode's normal permission evaluation, which today means whatever your
-permission config resolves to. A true tri-state re-prompt is blocked upstream; see
-[Known limitation](#known-limitation).
+With `"failure": "ask"`, OpenCode V2 requests user approval when the judge fails,
+even if configured permissions would allow the command. Explicit configured denials
+remain final. **This approval behavior works only in OpenCode V2 (`opencode2`).**
+On V1, `ask` still defers to configured permissions and does not force a prompt;
+see [Known limitation](#known-limitation).
 
 Environment overrides:
 
@@ -79,12 +95,18 @@ the judge entirely.
 
 ## Known limitation
 
-opencode's `permission.ask` hook is declared in `@opencode-ai/plugin` types but never
+**The forced-approval limitation applies only to OpenCode V1.** V2 uses its
+permission-evaluation hook to request approval for `"failure": "ask"`. The request
+includes the judge failure reason and applies only to the affected tool call.
+An approval is not stored in the plugin's verdict cache.
+
+V1's `permission.ask` hook is declared in `@opencode-ai/plugin` types but never
 triggered by the server ([anomalyco/opencode#7006](https://github.com/anomalyco/opencode/issues/7006)).
 `tool.execute.before` can only throw (deny) or return (defer to config), so binary
-allow/deny plus config-deferred `ask` is the complete behavior space today. Once upstream
-wires the hook, the tri-state verdict is future work. The policy and the DG categories stay
-fixed either way.
+allow/deny plus config-deferred `ask` remains the V1 behavior.
+The judge policy and DG categories are unchanged on both versions: the judge returns
+only allow/deny. `ask` is a failure setting, not a judge verdict, and does not turn a
+judge's denial into an approval request.
 
 ## Development
 
@@ -95,7 +117,7 @@ bun test src/                  # unit: verdict parsing, cache, prompt shape
 bun run test:integration       # fixtures through a live judge; skips if no server
 ```
 
-The integration suite drives the commands in `test/fixtures.json` through a running
+The integration suite targets V1. It drives the commands in `test/fixtures.json` through a running
 `opencode serve` (default `http://localhost:4096`). Start one with:
 
 ```sh
