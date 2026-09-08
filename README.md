@@ -49,6 +49,7 @@ TypeScript, which Bun loads natively.
    | **Judge prompt** | Edit the policy in the TUI machine's `$EDITOR`. |
    | **Restore default prompt** | Remove the custom policy from the draft after confirmation. |
    | **Store judge conversations** | Turn server audit files on or off. The default is off. |
+   | **Audit retention** | Set a positive whole number of days. The default is 7. |
 
 3. Select **Save** to write `shield-bash.json` on the connected server.
 4. Restart that OpenCode service to apply the changes.
@@ -59,7 +60,7 @@ field dialog returns to the menu without changing that field. To leave `$EDITOR`
 use that editor's quit command.
 
 The dialog shows when the server's `SHIELD_BASH_MODEL` or
-`SHIELD_BASH_STORE_SESSIONS` environment variable overrides a saved setting.
+`SHIELD_BASH_STORE_SESSIONS` or `SHIELD_BASH_SESSION_RETENTION_DAYS` environment variable overrides a saved setting.
 Saving a setting does not remove an environment override.
 Cache lifetime remains an environment-only setting.
 V1 users must edit the configuration file instead.
@@ -92,7 +93,8 @@ On V1, the server supplies the config directory.
   "providerID": "vercel",
   "modelID": "zai/glm-5.3-flash",
   "failure": "deny",
-  "storeSessions": false
+  "storeSessions": false,
+  "sessionRetentionDays": 7
 }
 ```
 
@@ -103,6 +105,7 @@ On V1, the server supplies the config directory.
 | `failure` | behavior when the judge errors: `deny` (default), `allow`, or `ask` |
 | `prompt` | optional replacement judge policy; omitted or blank uses the built-in policy |
 | `storeSessions` | write judge conversations to server audit files; `false` by default |
+| `sessionRetentionDays` | audit retention in positive whole days; defaults to `7` |
 
 The configured prompt works on both V1 and V2 after the service restarts. Empty
 prompts are rejected by the settings dialog. Command text is supplied separately;
@@ -127,6 +130,12 @@ Environment overrides:
 
 Missing config falls back to `vercel/zai/glm-5.3-flash`.
 
+`SHIELD_BASH_SESSION_RETENTION_DAYS=14` overrides the saved retention period.
+An unset or empty variable uses `sessionRetentionDays`, which defaults to 7 days.
+Zero, negative, fractional, nonnumeric, and numerically unsafe values are rejected.
+Both the file value and the environment override must be valid when supplied.
+Restart the service after changing retention, as with other settings.
+
 ### Judge conversation storage
 
 In **Configure Shield Bash**, set **Store judge conversations** to **On** or **Off**,
@@ -143,10 +152,17 @@ keep concurrent judgments separate. Session IDs are hashed only for directory
 names; the original ID remains in each record.
 
 **These files can contain secrets from commands, policies, or model responses.**
-New directories use mode `0700` and files use `0600` on POSIX systems. Records have
-no automatic expiry. Turning storage off stops new records; it does not delete old
-files. Cache hits do not create records because no judge conversation takes place.
-If storage is enabled but a record cannot be written, the command is blocked even
+New directories use mode `0700` and files use `0600` on POSIX systems. Records expire
+after **7 days by default**, measured from their creation timestamp in the filename.
+Before each new audit write, the plugin removes expired audit files across all saved
+sessions. This includes files created before retention was introduced. Cleanup leaves
+unrelated files, symbolic links, and empty session directories alone.
+
+Cleanup is activity-driven, not a background timer. Stopping OpenCode, turning storage
+off, or using only cached verdicts leaves existing files in place until the next audit
+write. A shorter retention period removes older files on that next write; deletion is
+permanent. Cache hits do not create records because no judge conversation takes place.
+If storage is enabled but cleanup or a record write fails, the command is blocked even
 when `failure` is `allow` or `ask`.
 
 This setting works on V1 and V2 and controls only these audit files. It does not

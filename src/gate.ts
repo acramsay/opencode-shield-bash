@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { createHash } from "node:crypto"
 import { defaultConfig, parseVerdictText, POLICY_PROMPT, readCache, saveCache, type CacheEntry } from "./lib"
-import { sessionStorageOverride, storeJudgeConversation } from "./audit"
+import { retentionDays, sessionRetentionOverride, sessionStorageOverride, storeJudgeConversation } from "./audit"
 
 type Model = { providerID: string; modelID: string }
 type FailureMode = "allow" | "deny" | "ask"
@@ -18,6 +18,8 @@ export async function createGate(runtime: {
   let model: Model = { providerID: "vercel", modelID: "zai/glm-5.3-flash" }
   let failureMode: FailureMode = "deny"
   let storeSessions = false
+  let configuredRetention: unknown
+  let sessionRetentionDays = 7
   let configLoaded: Promise<void> | null = null
 
   // V1 cannot serve client requests until plugin initialization returns.
@@ -30,6 +32,7 @@ export async function createGate(runtime: {
           const json = await Bun.file(join(directory, "shield-bash.json")).json()
           if (typeof json.prompt === "string" && json.prompt.trim()) prompt = json.prompt
           if (typeof json.storeSessions === "boolean") storeSessions = json.storeSessions
+          configuredRetention = json.sessionRetentionDays
           if (
             typeof json.providerID === "string" && json.providerID.trim() &&
             typeof json.modelID === "string" && json.modelID.trim()
@@ -46,6 +49,8 @@ export async function createGate(runtime: {
       const modelID = override?.slice(1).join("/")
       if (override?.[0] && modelID) model = { providerID: override[0], modelID }
       storeSessions = sessionStorageOverride() ?? storeSessions
+      sessionRetentionDays = retentionDays(configuredRetention)
+      sessionRetentionDays = sessionRetentionOverride() ?? sessionRetentionDays
       // A changed policy must never reuse verdicts from a different prompt.
       const hash = createHash("sha256").update(prompt).digest("hex")
       config.cachePath = join(dirname(config.cachePath), `verdicts-${hash}.json`)
@@ -71,7 +76,7 @@ export async function createGate(runtime: {
       // Audit failures stay outside judge failure handling: failure=allow must
       // never turn a denied verdict or a missing required record into execution.
       if (storeSessions) {
-        await storeJudgeConversation({ sessionID, command, policy: prompt, model, response, verdict: verdict ?? null, error: failure })
+        await storeJudgeConversation({ sessionID, command, policy: prompt, model, response, verdict: verdict ?? null, error: failure }, sessionRetentionDays)
       }
     }
     if (!verdict) {

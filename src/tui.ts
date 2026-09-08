@@ -32,7 +32,7 @@ export default Plugin.define({
             ctx.ui.toast.show({ message: "Loading Shield Bash settings…", variant: "info" })
             const snapshot = await rpc.read(null, { ...options, signal: AbortSignal.timeout(15_000) }) as SettingsSnapshot
             const draft = { ...snapshot.settings }
-            type Action = "model" | "failure" | "prompt" | "storeSessions" | "resetPrompt" | "save" | "cancel"
+            type Action = "model" | "failure" | "prompt" | "storeSessions" | "sessionRetentionDays" | "resetPrompt" | "save" | "cancel"
             let current: Action = "model"
             const override = snapshot.modelOverride ? " · overridden by SHIELD_BASH_MODEL" : ""
             while (true) {
@@ -51,6 +51,10 @@ export default Plugin.define({
                     description: `${draft.prompt === POLICY_PROMPT ? "Default" : "Custom"} safety policy · edit in $EDITOR`,
                     category: "Settings",
                   },
+                  {
+                    title: "Audit retention", value: "sessionRetentionDays", category: "Settings",
+                    description: `${draft.sessionRetentionDays} days${snapshot.sessionRetentionOverride === null ? "" : ` · env override: ${snapshot.sessionRetentionOverride} days`}`,
+                  },
                   { title: "Restore default prompt", value: "resetPrompt", description: "Replace the draft prompt with the built-in safety policy", category: "Settings" },
                   { title: "Save", value: "save", description: `Write ${snapshot.path}; service restart required`, category: "Actions" },
                   { title: "Cancel", value: "cancel", description: "Discard unsaved changes", category: "Actions" },
@@ -58,6 +62,17 @@ export default Plugin.define({
               })
               if (!action || action === "cancel") return
               current = action
+              if (action === "sessionRetentionDays") {
+                const value = await ctx.ui.dialog.prompt({ title: "Audit retention (days)", value: String(draft.sessionRetentionDays), description: "Positive whole days. Default: 7. Expired files are removed before the next audit write." })
+                if (value === undefined) continue
+                const days = Number(value)
+                if (!Number.isSafeInteger(days) || days < 1 || !Number.isSafeInteger(days * 86_400_000)) {
+                  await ctx.ui.dialog.alert({ title: "Invalid retention", message: "Enter a positive whole number of days within the safe numeric range." })
+                  continue
+                }
+                draft.sessionRetentionDays = days
+                continue
+              }
               if (action === "storeSessions") {
                 const value = await ctx.ui.dialog.select<boolean>({
                   title: "Save judge conversations on the server",
@@ -71,7 +86,7 @@ export default Plugin.define({
                   draft.storeSessions = value
                   await ctx.ui.dialog.alert({
                     title: "Judge conversation storage",
-                    message: `Server directory: ${snapshot.sessionStoragePath}\n\nRecords can contain secrets and have no automatic expiry. Turning storage off keeps existing files. Select Save to keep this setting.` +
+                    message: `Server directory: ${snapshot.sessionStoragePath}\n\nRecords can contain secrets. Retention: ${snapshot.sessionRetentionOverride ?? draft.sessionRetentionDays} days. Expired files are removed before new audit writes. Turning storage off pauses cleanup and keeps existing files. Select Save to keep this setting.` +
                       (snapshot.sessionStorageOverride === null ? "" : `\n\nSHIELD_BASH_STORE_SESSIONS overrides this setting to ${snapshot.sessionStorageOverride ? "On" : "Off"}.`),
                   })
                 }
@@ -105,7 +120,8 @@ export default Plugin.define({
                   title: "Shield Bash settings saved",
                   message: "Restart the connected OpenCode service to apply changes." +
                     (override ? " SHIELD_BASH_MODEL still overrides the saved model." : "") +
-                    (snapshot.sessionStorageOverride === null ? "" : " SHIELD_BASH_STORE_SESSIONS still overrides the saved storage setting."),
+                    (snapshot.sessionStorageOverride === null ? "" : " SHIELD_BASH_STORE_SESSIONS still overrides the saved storage setting.") +
+                    (snapshot.sessionRetentionOverride === null ? "" : " SHIELD_BASH_SESSION_RETENTION_DAYS still overrides the saved retention."),
                 })
                 return
               }

@@ -6,6 +6,7 @@ export type Settings = {
   failure: "deny" | "allow" | "ask"
   prompt: string
   storeSessions: boolean
+  sessionRetentionDays: number
 }
 
 export type SettingsSnapshot = {
@@ -14,6 +15,7 @@ export type SettingsSnapshot = {
   modelOverride: string
   sessionStorageOverride: boolean | null
   sessionStoragePath: string
+  sessionRetentionOverride: number | null
   revision: string | null
 }
 
@@ -25,8 +27,9 @@ export const settingsSchema = {
     failure: { type: "string", enum: ["deny", "allow", "ask"] },
     prompt: { type: "string", minLength: 1 },
     storeSessions: { type: "boolean" },
+    sessionRetentionDays: { type: "integer", minimum: 1 },
   },
-  required: ["providerID", "modelID", "failure", "prompt", "storeSessions"],
+  required: ["providerID", "modelID", "failure", "prompt", "storeSessions", "sessionRetentionDays"],
   additionalProperties: false,
 } as const
 
@@ -45,9 +48,10 @@ export const SettingsRpc = Rpc.define({
           modelOverride: { type: "string" },
           sessionStorageOverride: { type: ["boolean", "null"] },
           sessionStoragePath: { type: "string" },
+          sessionRetentionOverride: { type: ["integer", "null"], minimum: 1 },
           revision: { type: ["string", "null"] },
         },
-        required: ["settings", "path", "modelOverride", "sessionStorageOverride", "sessionStoragePath", "revision"],
+        required: ["settings", "path", "modelOverride", "sessionStorageOverride", "sessionStoragePath", "sessionRetentionOverride", "revision"],
         additionalProperties: false,
       },
     },
