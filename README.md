@@ -9,6 +9,7 @@ Supports OpenCode V2 beta and V1 1.18.29 or later from the same package.
 The V2 API dependency is pinned to `@opencode/plugin@0.0.0-beta-19296`.
 Keep this an exact version: a caret range can select the nonfunctional `0.0.0-reserved` package.
 V2 uses tool-free text generation to judge `shell` (and legacy `bash`) tool calls.
+It also judges built-in tool access that OpenCode identifies as an external directory.
 It does not create judge sessions. Optional server audit files can retain judge
 requests and responses without adding sessions to OpenCode.
 
@@ -36,6 +37,75 @@ opencode installs npm plugins with Bun at startup. No build step: the package sh
 TypeScript, which Bun loads natively.
 
 ## Config
+
+### Live Shield status (V2 only)
+
+Shield shows the current check or latest result above the session prompt.
+The indicator stays visible while checks run, then disappears five seconds after
+the latest verdict. Results remain available in the `/shield` panel.
+
+```text
+◌ Shield: checking
+✓ Shield: allowed
+✓ Shield: allowed (cached)
+✕ Shield: blocked — Reads private credentials
+! Shield: blocked — Safety judge unavailable
+? Shield: approval needed — Safety judge unavailable
+```
+
+With `failure: "allow"`, a judge error shows **unchecked**, not **allowed**.
+Shield approval is a safety decision, not the command's exit status or a promise
+that OpenCode's other permission checks will allow execution.
+If OpenCode requires approval, the result records that requirement separately:
+`✓ Shield: allowed (cached) · OpenCode approval required`. This records the
+permission requirement at check time, not whether you later approved the action.
+
+Run `/shield` or select **Show Shield checks** from the command palette to open
+the results panel. It shows each check's target, verdict, and reason. Press Escape
+to close the panel or `f` to change its full-screen presentation. The compact
+blocked indicator shows one short reason; the panel retains more detail.
+
+Results are scoped to the current session. Open a subagent session to see its
+checks. Concurrent checks remain separate. The server retains the latest 200
+checks per location in memory, including cache hits. Reloading the server plugin
+clears them; they are not a persistent audit trail. The TUI recovers missed events
+by refreshing the current session's results. If that refresh fails, it shows
+**status unavailable** rather than a stale approval.
+
+This uses supported TUI slots, not badges inside OpenCode's built-in tool cards.
+Restart the service and reopen the TUI after installing this update.
+
+### External directories (V2 only)
+
+Shield judges `external_directory` permission evaluations for built-in reads,
+writes, edits, patches, searches, and detected shell directory access. OpenCode
+determines which targets are outside the session's location/project worktree.
+Ordinary in-project file tool operations keep their existing behavior; shell
+commands still receive the full-command check.
+
+External access is **reviewed**, not automatically blocked. The additional policy
+in `src/external.ts` allows scoped access to ordinary development files. It denies
+access to private credentials and secret-bearing environment files, destructive
+changes to unrelated data, security changes, and global installs. Denials show a
+short reason. The configured judge model and failure mode apply to these checks.
+The external policy supplements the configured policy and has a separate cache.
+
+An allow verdict does not bypass an existing OpenCode approval requirement.
+Explicit configured denials remain final and do not invoke the judge, so they
+do not produce a Shield verdict. If the judge fails, `deny` blocks access, `ask`
+requests approval, and `allow` leaves the original permission decision unchanged.
+
+The judge receives the tool input and external permission resources, not the
+contents of files being read. Write and patch inputs can include file contents.
+**The verdict cache and optional audit records can therefore contain tool input
+and secrets.** Live results contain target summaries and judge reasons.
+
+This is not a filesystem sandbox. It cannot intercept raw filesystem access by
+other plugins or arbitrary child-process I/O. On OpenCode beta-19271, external
+path detection is lexical: a path inside the project that follows a symlink
+outside it can bypass the external-directory check. Shell coverage depends on
+the host's command parsing. Do not rely on this plugin alone to isolate untrusted
+code from your filesystem. V1 remains shell-only.
 
 ### Settings dialog (V2 only)
 

@@ -3,6 +3,7 @@ import type { KeymapLayer } from "@opencode/plugin/tui/context"
 import { SettingsRpc, type Settings, type SettingsSnapshot } from "./settings-rpc"
 import { POLICY_PROMPT } from "./lib"
 import { editPrompt } from "./editor"
+import { setupStatusUI } from "./status-tui"
 
 function errorMessage(error: unknown): string {
   // RPC failures are plain objects, not Error instances.
@@ -15,10 +16,22 @@ function errorMessage(error: unknown): string {
 export default Plugin.define({
   id: "shield-bash.tui",
   setup(ctx) {
+    const stopStatus = setupStatusUI(ctx)
     let open = false
     const layer = (): KeymapLayer => ({
       mode: "global",
       commands: [{
+        id: "shield-bash.checks",
+        title: "Show Shield checks",
+        group: "Shield Bash",
+        palette: true,
+        slash: { name: "shield" },
+        run: () => {
+          if (!ctx.ui.panel.open("shield-bash.checks")) {
+            ctx.ui.toast.show({ message: "Open a session to view Shield checks", variant: "info" })
+          }
+        },
+      }, {
         id: "shield-bash.configure",
         title: "Configure Shield Bash",
         group: "Shield Bash",
@@ -163,12 +176,13 @@ export default Plugin.define({
       }],
     })
     // Register inside the app's keymap provider, not during plugin setup.
-    return ctx.ui.slot({
+    const stopCommands = ctx.ui.slot({
       append: "app",
       render: () => {
         ctx.keymap.layer(layer)
         return null
       },
     })
+    return () => { stopCommands(); stopStatus() }
   },
 })

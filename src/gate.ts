@@ -3,6 +3,7 @@ import { dirname, join } from "node:path"
 import { createHash } from "node:crypto"
 import { defaultConfig, parseVerdictText, POLICY_PROMPT, readCache, saveCache, type CacheEntry } from "./lib"
 import { retentionDays, sessionRetentionOverride, sessionStorageOverride, storeJudgeConversation } from "./audit"
+import type { CheckStatus } from "./status"
 
 type Model = { providerID: string; modelID: string }
 type FailureMode = "allow" | "deny" | "ask"
@@ -10,6 +11,7 @@ type FailureMode = "allow" | "deny" | "ask"
 export async function createGate(runtime: {
   configDirectory: () => Promise<string | undefined>
   judge: (command: string, sessionID: string, model: Model, prompt: string) => Promise<string>
+  policySuffix?: string
 }) {
   const config = defaultConfig()
   mkdirSync(dirname(config.cachePath), { recursive: true })
@@ -51,6 +53,7 @@ export async function createGate(runtime: {
       storeSessions = sessionStorageOverride() ?? storeSessions
       sessionRetentionDays = retentionDays(configuredRetention)
       sessionRetentionDays = sessionRetentionOverride() ?? sessionRetentionDays
+      if (runtime.policySuffix) prompt = `${prompt}\n\n${runtime.policySuffix}`
       // A changed policy must never reuse verdicts from a different prompt.
       const hash = createHash("sha256").update(prompt).digest("hex")
       config.cachePath = join(dirname(config.cachePath), `verdicts-${hash}.json`)
@@ -59,7 +62,7 @@ export async function createGate(runtime: {
     return configLoaded
   }
 
-  return async (command: unknown, sessionID: string) => {
+  const evaluate = async (command: unknown, sessionID: string, report: (status: CheckStatus) => void) => {
     if (typeof command !== "string" || command.trim() === "") return
     await loadConfig()
     const cached = cache.get(command)
@@ -80,10 +83,11 @@ export async function createGate(runtime: {
       }
     }
     if (!verdict) {
-      if (failureMode === "allow") return
       const reason = failure ?? "Judge returned no verdict."
+      report({ state: failureMode === "ask" ? "approval" : "error", reason: "Safety judge unavailable", detail: reason, cached: false, outcome: failureMode })
+      if (failureMode === "allow") return
       if (failureMode === "ask") {
-        return { message: `shield-bash judge unavailable. Approve this command?\nDetail: ${reason}` }
+        return { message: `shield-bash judge unavailable. Approve this action?\nDetail: ${reason}` }
       }
       throw new Error(`shield-bash denied (judge unavailable, fail-closed).\nDetail: ${reason}`)
     }
@@ -95,7 +99,26 @@ export async function createGate(runtime: {
     if (verdict.decision === "deny") {
       const category = verdict.category ? `\nCategory: ${verdict.category}` : ""
       const alt = verdict.alternative ? `\nAlternative: ${verdict.alternative}` : ""
+      report({ state: "blocked", reason: verdict.reason, detail: `${verdict.reason}${category}${alt}`, cached: !!cached, outcome: "deny" })
       throw new Error(`shield-bash denied.${category}\nReason: ${verdict.reason}${alt}`)
+    }
+    report({ state: "allowed", reason: "", detail: "", cached: !!cached, outcome: "allow" })
+  }
+
+  return async (command: unknown, sessionID: string, onStatus?: (status: CheckStatus) => void) => {
+    if (typeof command !== "string" || command.trim() === "") return
+    let reported = false
+    const report = (status: CheckStatus) => {
+      reported = status.state !== "checking"
+      // Display failures must never change a safety decision.
+      try { onStatus?.(status) } catch {}
+    }
+    report({ state: "checking", reason: "", detail: "", cached: false, outcome: "pending" })
+    try {
+      return await evaluate(command, sessionID, report)
+    } catch (error) {
+      if (!reported) report({ state: "error", reason: "Safety check failed", detail: error instanceof Error ? error.message : String(error), cached: false, outcome: "deny" })
+      throw error
     }
   }
 }

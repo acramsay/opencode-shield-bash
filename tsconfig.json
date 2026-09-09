@@ -6,7 +6,9 @@
     "types": ["bun"],
     "strict": true,
     "noEmit": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid"
   },
   "include": ["index.ts", "tui.ts", "src", "test"]
 }
