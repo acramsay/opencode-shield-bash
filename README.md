@@ -1,11 +1,19 @@
 # opencode-shield-bash
 
-[opencode](https://opencode.ai) plugin that gates every bash tool call through a second
-session. A judge session, prompted with a fixed policy, returns an allow/deny JSON verdict
+[opencode](https://opencode.ai) plugin that gates shell tool calls through a model judge.
+The judge, prompted with a configurable safety policy, returns an allow/deny JSON verdict
 before the command runs. Denials throw into the calling session, so the agent sees why the
 command was blocked.
 
-The judge session is created lazily as a child of the calling session's root, titled "Shield Bash"
+Supports OpenCode V2 beta and V1 1.18.29 or later from the same package.
+The V2 API dependency is pinned to `@opencode/plugin@0.0.0-beta-19296`.
+Keep this an exact version: a caret range can select the nonfunctional `0.0.0-reserved` package.
+V2 uses tool-free text generation to judge `shell` (and legacy `bash`) tool calls.
+It also judges built-in tool access that OpenCode identifies as an external directory.
+It does not create judge sessions. Optional server audit files can retain judge
+requests and responses without adding sessions to OpenCode.
+
+On V1, the judge session is created lazily as a child of the calling session's root, titled "Shield Bash"
 — one judge per root session, shared by that root's subagent sessions. That
 matters for more than bookkeeping: it is reachable with the TUI's child-session navigation,
 stays out of the roots-only session list, is deleted with its parent, and is never
@@ -13,7 +21,13 @@ auto-shared. The judge transcript doubles as the audit trail.
 
 ## Install
 
-Add the package to your `opencode.json` plugin array:
+For V2, add the package to `plugins` in `opencode.json`:
+
+```json
+{ "plugins": ["@acramsay/opencode-shield-bash"] }
+```
+
+For V1 1.18.29 or later, use `plugin` instead:
 
 ```json
 { "plugin": ["@acramsay/opencode-shield-bash"] }
@@ -24,14 +38,133 @@ TypeScript, which Bun loads natively.
 
 ## Config
 
+### Live Shield status (V2 only)
+
+Shield shows the current check or latest result above the session prompt.
+The indicator stays visible while checks run, then disappears five seconds after
+the latest verdict. Results remain available in the `/shield` panel.
+
+```text
+◌ Shield: checking
+✓ Shield: allowed
+✓ Shield: allowed (cached)
+✕ Shield: blocked — Reads private credentials
+! Shield: blocked — Safety judge unavailable
+? Shield: approval needed — Safety judge unavailable
+```
+
+With `failure: "allow"`, a judge error shows **unchecked**, not **allowed**.
+Shield approval is a safety decision, not the command's exit status or a promise
+that OpenCode's other permission checks will allow execution.
+If OpenCode requires approval, the result records that requirement separately:
+`✓ Shield: allowed (cached) · OpenCode approval required`. This records the
+permission requirement at check time, not whether you later approved the action.
+
+Run `/shield` or select **Show Shield checks** from the command palette to open
+the results panel. It shows each check's target, verdict, and reason. Press Escape
+to close the panel or `f` to change its full-screen presentation. The compact
+blocked indicator shows one short reason; the panel retains more detail.
+
+Results are scoped to the current session. Open a subagent session to see its
+checks. Concurrent checks remain separate. The server retains the latest 200
+checks per location in memory, including cache hits. Reloading the server plugin
+clears them; they are not a persistent audit trail. The TUI recovers missed events
+by refreshing the current session's results. If that refresh fails, it shows
+**status unavailable** rather than a stale approval.
+
+This uses supported TUI slots, not badges inside OpenCode's built-in tool cards.
+Restart the service and reopen the TUI after installing this update.
+
+### External directories (V2 only)
+
+Shield judges `external_directory` permission evaluations for built-in reads,
+writes, edits, patches, searches, and detected shell directory access. OpenCode
+determines which targets are outside the session's location/project worktree.
+Ordinary in-project file tool operations keep their existing behavior; shell
+commands still receive the full-command check.
+
+External access is **reviewed**, not automatically blocked. The additional policy
+in `src/external.ts` allows scoped access to ordinary development files. It denies
+access to private credentials and secret-bearing environment files, destructive
+changes to unrelated data, security changes, and global installs. Denials show a
+short reason. The configured judge model and failure mode apply to these checks.
+The external policy supplements the configured policy and has a separate cache.
+
+An allow verdict does not bypass an existing OpenCode approval requirement.
+Explicit configured denials remain final and do not invoke the judge, so they
+do not produce a Shield verdict. If the judge fails, `deny` blocks access, `ask`
+requests approval, and `allow` leaves the original permission decision unchanged.
+
+The judge receives the tool input and external permission resources, not the
+contents of files being read. Write and patch inputs can include file contents.
+**The verdict cache and optional audit records can therefore contain tool input
+and secrets.** Live results contain target summaries and judge reasons.
+
+This is not a filesystem sandbox. It cannot intercept raw filesystem access by
+other plugins or arbitrary child-process I/O. On OpenCode beta-19271, external
+path detection is lexical: a path inside the project that follows a symlink
+outside it can bypass the external-directory check. Shell coverage depends on
+the host's command parsing. Do not rely on this plugin alone to isolate untrusted
+code from your filesystem. V1 remains shell-only.
+
+### Settings dialog (V2 only)
+
+1. Open the command palette and select **Configure Shield Bash**.
+2. Select a setting and edit its draft value:
+
+   | Setting | Action |
+   | --- | --- |
+   | **Judge model** | Enter `provider/model`, for example `vercel/zai/glm-5.3-flash`. Only the first slash separates the provider from the model ID. |
+   | **On judge failure** | Choose `deny`, `ask`, or `allow`. This does not change how judge denials are handled. |
+   | **Judge prompt** | Edit the policy in the TUI machine's `$EDITOR`. |
+   | **Restore default prompt** | Remove the custom policy from the draft after confirmation. |
+   | **Store judge conversations** | Turn server audit files on or off. The default is off. |
+   | **Audit retention** | Set a positive whole number of days. The default is 7. |
+
+3. Select **Save** to write `shield-bash.json` on the connected server.
+4. Restart that OpenCode service to apply the changes.
+
+The settings apply globally on that server.
+**Cancel** or Escape from the settings menu discards edits. Escape from a native
+field dialog returns to the menu without changing that field. To leave `$EDITOR`,
+use that editor's quit command.
+
+The dialog shows when the server's `SHIELD_BASH_MODEL` or
+`SHIELD_BASH_STORE_SESSIONS` or `SHIELD_BASH_SESSION_RETENTION_DAYS` environment variable overrides a saved setting.
+Saving a setting does not remove an environment override.
+Cache lifetime remains an environment-only setting.
+V1 users must edit the configuration file instead.
+
+**Judge prompt** opens the current policy in the TUI machine's `$EDITOR`, using a
+private temporary Markdown file. Set `EDITOR` before starting OpenCode (for example,
+`EDITOR=vi` or `EDITOR="code --wait"`). Editor arguments and quoted executable paths
+are supported. GUI editors must wait until editing is complete. OpenCode suspends
+its terminal UI while the editor runs and restores it afterward. A successful exit
+updates only the settings draft; select **Save** to send it to the connected server.
+An editor error or empty file leaves the draft unchanged. Temporary files are removed
+after editing. This also works when the connected server is remote.
+
+The edited prompt replaces the built-in safety policy. Keep the required JSON response format:
+`{"decision":"allow"}` or `{"decision":"deny","reason":"..."}`.
+Changing the policy can weaken protection. **Restore default prompt** restores
+the built-in policy in the draft; select **Save** to remove the prompt override and
+follow future built-in policy updates. Cancel discards
+prompt edits along with other unsaved settings.
+
+### Configuration file
+
 The plugin reads `shield-bash.json` from your opencode config directory at runtime. It is
 user-side configuration and never ships with the package.
+On V2, this is `$XDG_CONFIG_HOME/opencode`, or `~/.config/opencode` when unset.
+On V1, the server supplies the config directory.
 
 ```json
 {
   "providerID": "vercel",
   "modelID": "zai/glm-5.3-flash",
-  "failure": "deny"
+  "failure": "deny",
+  "storeSessions": false,
+  "sessionRetentionDays": 7
 }
 ```
 
@@ -39,11 +172,20 @@ user-side configuration and never ships with the package.
 | --- | --- |
 | `providerID` | provider that serves the judge model |
 | `modelID` | model that judges the commands |
-| `failure` | behavior when the judge session errors: `deny` (default), `allow`, or `ask` |
+| `failure` | behavior when the judge errors: `deny` (default), `allow`, or `ask` |
+| `prompt` | optional replacement judge policy; omitted or blank uses the built-in policy |
+| `storeSessions` | write judge conversations to server audit files; `false` by default |
+| `sessionRetentionDays` | audit retention in positive whole days; defaults to `7` |
 
-`ask` defers to opencode's normal permission evaluation, which today means whatever your
-permission config resolves to. A true tri-state re-prompt is blocked upstream; see
-[Known limitation](#known-limitation).
+The configured prompt works on both V1 and V2 after the service restarts. Empty
+prompts are rejected by the settings dialog. Command text is supplied separately;
+do not add a command placeholder to the prompt.
+
+With `"failure": "ask"`, OpenCode V2 requests user approval when the judge fails,
+even if configured permissions would allow the command. Explicit configured denials
+remain final. **This approval behavior works only in OpenCode V2 (`opencode2`).**
+On V1, `ask` still defers to configured permissions and does not force a prompt;
+see [Known limitation](#known-limitation).
 
 Environment overrides:
 
@@ -51,12 +193,55 @@ Environment overrides:
   slash splits provider from model, so model IDs that contain a slash (like
   `zai/glm-5.3-flash`) work as-is.
 - `SHIELD_BASH_TTL_HOURS` sets the verdict cache TTL in hours (default 24).
+- `SHIELD_BASH_STORE_SESSIONS=true` enables judge conversation storage; `false`
+  disables it. `1` and `0` are also accepted. This overrides `storeSessions` in
+  the config file. An unset or empty variable uses the file setting. Invalid
+  values stop command checks with a configuration error.
 
 Missing config falls back to `vercel/zai/glm-5.3-flash`.
 
+`SHIELD_BASH_SESSION_RETENTION_DAYS=14` overrides the saved retention period.
+An unset or empty variable uses `sessionRetentionDays`, which defaults to 7 days.
+Zero, negative, fractional, nonnumeric, and numerically unsafe values are rejected.
+Both the file value and the environment override must be valid when supplied.
+Restart the service after changing retention, as with other settings.
+
+### Judge conversation storage
+
+In **Configure Shield Bash**, set **Store judge conversations** to **On** or **Off**,
+then select **Save** and restart the service. The dialog shows the server's storage
+path and any environment override. You can also set `"storeSessions": true` in
+`shield-bash.json`. The server's environment takes precedence, not the TUI machine's.
+
+When enabled, each actual judge request creates one JSON file under
+`$XDG_DATA_HOME/shield-bash/sessions/<session-hash>/`, or
+`~/.local/share/shield-bash/sessions/<session-hash>/` when `XDG_DATA_HOME` is unset.
+Each file records the timestamp, calling session ID, command, policy, model,
+raw response, parsed verdict, and any judge or verdict-parsing error. Unique files
+keep concurrent judgments separate. Session IDs are hashed only for directory
+names; the original ID remains in each record.
+
+**These files can contain secrets from commands, policies, or model responses.**
+New directories use mode `0700` and files use `0600` on POSIX systems. Records expire
+after **7 days by default**, measured from their creation timestamp in the filename.
+Before each new audit write, the plugin removes expired audit files across all saved
+sessions. This includes files created before retention was introduced. Cleanup leaves
+unrelated files, symbolic links, and empty session directories alone.
+
+Cleanup is activity-driven, not a background timer. Stopping OpenCode, turning storage
+off, or using only cached verdicts leaves existing files in place until the next audit
+write. A shorter retention period removes older files on that next write; deletion is
+permanent. Cache hits do not create records because no judge conversation takes place.
+If storage is enabled but cleanup or a record write fails, the command is blocked even
+when `failure` is `allow` or `ask`.
+
+This setting works on V1 and V2 and controls only these audit files. It does not
+disable the verdict cache or V1's child judge sessions, which V1 needs to run the
+judge. V2 remains stateless apart from the cache and optional audit files.
+
 ## What gets denied
 
-The full policy lives in `POLICY_PROMPT` in `src/lib.ts`. The judge must return one JSON
+The default policy lives in `POLICY_PROMPT` in `src/lib.ts`. The judge must return one JSON
 object: allow, or deny with a category (`DG1` through `DG8`), a one-line reason, and
 optionally a safer alternative. Categories, in short:
 
@@ -73,18 +258,28 @@ Whole pipelines are judged, so one bad segment denies the chain.
 
 ## Caching
 
-Verdicts are cached in `~/.cache/shield-bash/verdicts.json` (respecting `XDG_CACHE_HOME`),
-keyed by command string, expiring after the TTL, capped at 1000 entries. A cache hit skips
-the judge entirely.
+Verdicts are cached in `~/.cache/shield-bash/verdicts-<prompt-hash>.json` (respecting
+`XDG_CACHE_HOME`), keyed by command string, expiring after the TTL, capped at 1000
+entries per file. A cache hit skips the judge entirely.
+Every prompt, including the built-in policy, has a separate cache file. Changes to
+either a custom prompt or the built-in policy cannot reuse decisions from a
+different policy. Restoring a previous prompt can reuse its unexpired verdicts.
+Legacy `verdicts.json` files are ignored because they do not identify their policy.
 
 ## Known limitation
 
-opencode's `permission.ask` hook is declared in `@opencode-ai/plugin` types but never
+**The forced-approval limitation applies only to OpenCode V1.** V2 uses its
+permission-evaluation hook to request approval for `"failure": "ask"`. The request
+includes the judge failure reason and applies only to the affected tool call.
+An approval is not stored in the plugin's verdict cache.
+
+V1's `permission.ask` hook is declared in `@opencode-ai/plugin` types but never
 triggered by the server ([anomalyco/opencode#7006](https://github.com/anomalyco/opencode/issues/7006)).
 `tool.execute.before` can only throw (deny) or return (defer to config), so binary
-allow/deny plus config-deferred `ask` is the complete behavior space today. Once upstream
-wires the hook, the tri-state verdict is future work. The policy and the DG categories stay
-fixed either way.
+allow/deny plus config-deferred `ask` remains the V1 behavior.
+The default policy and DG categories are the same on both versions: the judge returns
+only allow/deny. `ask` is a failure setting, not a judge verdict, and does not turn a
+judge's denial into an approval request.
 
 ## Development
 
@@ -95,7 +290,7 @@ bun test src/                  # unit: verdict parsing, cache, prompt shape
 bun run test:integration       # fixtures through a live judge; skips if no server
 ```
 
-The integration suite drives the commands in `test/fixtures.json` through a running
+The integration suite targets V1. It drives the commands in `test/fixtures.json` through a running
 `opencode serve` (default `http://localhost:4096`). Start one with:
 
 ```sh

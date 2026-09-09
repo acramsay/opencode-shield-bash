@@ -1,17 +1,30 @@
 {
   "name": "@acramsay/opencode-shield-bash",
   "version": "1.0.1",
-  "description": "opencode plugin that gates bash tool calls through a second-session allow/deny judge",
+  "description": "opencode V2 and V1 plugin that gates shell tool calls through an allow/deny model judge",
   "type": "module",
   "license": "MIT",
   "main": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./server": "./src/index.ts"
+    "./server": "./src/index.ts",
+    "./tui": "./src/tui.ts"
   },
   "files": [
+    "index.ts",
+    "tui.ts",
     "src/index.ts",
-    "src/lib.ts"
+    "src/lib.ts",
+    "src/gate.ts",
+    "src/v1.ts",
+    "src/tui.ts",
+    "src/editor.ts",
+    "src/audit.ts",
+    "src/settings.ts",
+    "src/settings-rpc.ts",
+    "src/status.ts",
+    "src/status-tui.tsx",
+    "src/external.ts"
   ],
   "publishConfig": {
     "access": "public"
@@ -67,6 +80,15 @@
     "@semantic-release/release-notes-generator": "^14.1.1",
     "@types/bun": "^1.4.0",
     "semantic-release": "^25.0.9",
+    "solid-js": "1.9.12",
     "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "@opencode/plugin": "0.0.0-beta-19296"
+  },
+  "peerDependencies": {
+    "@opentui/core": ">=0.5.10",
+    "@opentui/solid": ">=0.5.10",
+    "solid-js": "1.9.12"
   }
 }
