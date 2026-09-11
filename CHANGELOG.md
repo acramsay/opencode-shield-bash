@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/acramsay/opencode-shield-bash/compare/v1.0.1...v1.0.2) (2026-09-11)
+
+
+### Bug Fixes
+
+* commands are evaluated sequentially to avoid a race condition ([405c4a3](https://github.com/acramsay/opencode-shield-bash/commit/405c4a3313cd42ed021c69b091d931b18b086268))
+
 ## [1.0.1](https://github.com/acramsay/opencode-shield-bash/compare/v1.0.0...v1.0.1) (2026-09-08)
 
 

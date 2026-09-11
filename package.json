@@ -1,6 +1,6 @@
 {
   "name": "@acramsay/opencode-shield-bash",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "opencode plugin that gates bash tool calls through a second-session allow/deny judge",
   "type": "module",
   "license": "MIT",
