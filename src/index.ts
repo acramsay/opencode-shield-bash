@@ -119,6 +119,27 @@ export const ShieldBash: Plugin = async ({ client, directory }) => {
     return created
   }
 
+  // The server joins concurrent prompts to one session into a single run
+  // and hands every caller the same final message, so prompts must go one
+  // at a time to keep each verdict paired to its command.
+  const promptChain = new Map<string, Promise<unknown>>()
+  const promptJudge = (judgeSessionID: string, command: string) => {
+    const tail = (promptChain.get(judgeSessionID) ?? Promise.resolve()).catch(() => {})
+    const run = tail.then(() =>
+      client.session.prompt({
+        path: { id: judgeSessionID },
+        body: {
+          system: POLICY_PROMPT,
+          parts: [{ type: "text", text: `Command: ${command}\nReturn the JSON verdict.` }] as const,
+          model,
+        } as never,
+        query: { directory },
+      }),
+    )
+    promptChain.set(judgeSessionID, run)
+    return run
+  }
+
   return {
     "tool.execute.before": async (input, output) => {
       if (input.tool !== "bash") return
@@ -133,21 +154,17 @@ export const ShieldBash: Plugin = async ({ client, directory }) => {
           verdict = cached.verdict
         } else {
           const sessID = await ensureJudgeSession(await rootOf(input.sessionID))
-          const response = await client.session.prompt({
-            path: { id: sessID },
-            body: {
-              system: POLICY_PROMPT,
-              parts: [{ type: "text", text: `Command: ${command}\nReturn the JSON verdict.` }] as const,
-              model,
-            } as never,
-            query: { directory },
-          })
+          const response = await promptJudge(sessID, command)
           if (response.error || !response.data) {
             throw new Error(`judge session error: ${JSON.stringify(response.error)}`)
           }
-          const textPart = response.data.parts.find((p) => p.type === "text")
-          if (!textPart || textPart.type !== "text") throw new Error("judge returned no text")
-          verdict = parseVerdictText((textPart as { type: "text"; text: string }).text)
+          const textParts = response.data.parts.filter((p) => p.type === "text") as Array<{
+            type: "text"
+            text: string
+          }>
+          const text = textParts.map((p) => p.text).join("\n")
+          if (text === "") throw new Error("judge returned no text")
+          verdict = parseVerdictText(text)
         }
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err)

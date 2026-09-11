@@ -7,8 +7,18 @@ import { ShieldBash } from "./index"
 type FakeSession = { parentID?: string }
 
 // Minimal fake of the SDK client surface the plugin touches.
-const makeClient = (sessions: Record<string, FakeSession>, opts?: { failFirstCreate?: boolean }) => {
-  const state = { creates: 0, createdParents: [] as string[], prompts: 0, gets: 0 }
+const makeClient = (
+  sessions: Record<string, FakeSession>,
+  opts?: { failFirstCreate?: boolean; slowPrompt?: boolean },
+) => {
+  const state = {
+    creates: 0,
+    createdParents: [] as string[],
+    prompts: 0,
+    gets: 0,
+    promptActive: 0,
+    promptMaxActive: 0,
+  }
   const client = {
     path: {
       get: async () => ({ data: {} }),
@@ -29,6 +39,13 @@ const makeClient = (sessions: Record<string, FakeSession>, opts?: { failFirstCre
       },
       prompt: async () => {
         state.prompts++
+        if (!opts?.slowPrompt) {
+          return { data: { parts: [{ type: "text", text: '{"decision":"allow"}' }] } }
+        }
+        state.promptActive++
+        state.promptMaxActive = Math.max(state.promptMaxActive, state.promptActive)
+        await new Promise((r) => setTimeout(r, 5))
+        state.promptActive--
         return { data: { parts: [{ type: "text", text: '{"decision":"allow"}' }] } }
       },
     },
@@ -74,6 +91,18 @@ describe("judge session lifecycle", () => {
     expect(state.creates).toBe(1)
     expect(state.createdParents).toEqual(["root-1"])
     expect(state.prompts).toBe(3)
+  })
+
+  test("concurrent bash calls prompt the judge one at a time", async () => {
+    const { client, state } = makeClient({ "root-1": {} }, { slowPrompt: true })
+    const { gate } = await initPlugin(client)
+    await Promise.all([
+      gate(...bashCall("cmd-a", "root-1")),
+      gate(...bashCall("cmd-b", "root-1")),
+      gate(...bashCall("cmd-c", "root-1")),
+    ])
+    expect(state.prompts).toBe(3)
+    expect(state.promptMaxActive).toBe(1)
   })
 
   test("subagent sessions share their root's judge session", async () => {

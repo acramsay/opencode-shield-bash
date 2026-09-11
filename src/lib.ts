@@ -96,12 +96,29 @@ export async function saveCache(path: string, map: Map<string, CacheEntry>): Pro
   } catch {}
 }
 
-export function parseVerdictText(text: string): Verdict {
-  const cleaned = text.replace(/```json|```/g, "")
-  const start = cleaned.indexOf("{")
-  const end = cleaned.lastIndexOf("}")
-  if (start === -1 || end === -1) throw new Error("verdict response missing JSON object")
-  const parsed = JSON.parse(cleaned.slice(start, end + 1)) as Record<string, unknown>
+const readJsonObject = (text: string, start: number): string | null => {
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === "\\") escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') inString = true
+    else if (ch === "{") depth++
+    else if (ch === "}") {
+      depth--
+      if (depth === 0) return text.slice(start, i + 1)
+    }
+  }
+  return null
+}
+
+const asVerdict = (parsed: Record<string, unknown>): Verdict => {
   if (parsed.decision !== "allow" && parsed.decision !== "deny") {
     throw new Error(`unexpected decision value: ${String(parsed.decision)}`)
   }
@@ -114,4 +131,22 @@ export function parseVerdictText(text: string): Verdict {
     reason: typeof parsed.reason === "string" ? parsed.reason : "",
     alternative: typeof parsed.alternative === "string" ? parsed.alternative : null,
   }
+}
+
+export function parseVerdictText(text: string): Verdict {
+  const cleaned = text.replace(/```json|```/g, "")
+  // The first complete JSON object is the verdict. One that parses but is
+  // invalid is never skipped for a later object.
+  let pos = cleaned.indexOf("{")
+  while (pos !== -1) {
+    const candidate = readJsonObject(cleaned, pos)
+    if (candidate === null) break
+    try {
+      return asVerdict(JSON.parse(candidate) as Record<string, unknown>)
+    } catch (err) {
+      if (!(err instanceof SyntaxError)) throw err
+      pos = cleaned.indexOf("{", pos + candidate.length)
+    }
+  }
+  throw new Error("verdict response missing JSON object")
 }

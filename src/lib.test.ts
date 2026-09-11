@@ -30,6 +30,40 @@ describe("parseVerdictText", () => {
     expect(parseVerdictText(text).decision).toBe("allow")
   })
 
+  test("parses a batched reply carrying several verdicts", () => {
+    // Regression: batched replies used to fail JSON.parse, denying
+    // commands the judge had allowed.
+    const batch = '{"decision":"allow"}\n{"decision":"allow"}\n{"decision":"allow"}'
+    expect(parseVerdictText(batch).decision).toBe("allow")
+  })
+
+  test("takes the first object as the verdict when several arrive", () => {
+    const text =
+      '{"decision":"deny","category":"DG3","reason":"pipes curl into bash"}\n{"decision":"allow"}'
+    const verdict = parseVerdictText(text)
+    expect(verdict.decision).toBe("deny")
+    expect(verdict.category).toBe("DG3")
+  })
+
+  test("skips a prose brace that is not JSON and uses the real verdict", () => {
+    const text = 'Here {is} the verdict: {"decision":"allow"}'
+    expect(parseVerdictText(text).decision).toBe("allow")
+  })
+
+  test("throws on an invalid verdict even when a valid one follows", () => {
+    expect(() => parseVerdictText('{"decision":"maybe"} {"decision":"allow"}')).toThrow(
+      "unexpected decision value",
+    )
+  })
+
+  test("braces inside JSON strings do not end the object early", () => {
+    const text =
+      '{"decision":"deny","category":"DG1","reason":"rm -rf {~/dir}","alternative":"rm ./dir"}'
+    const verdict = parseVerdictText(text)
+    expect(verdict.decision).toBe("deny")
+    expect(verdict.reason).toBe("rm -rf {~/dir}")
+  })
+
   test("throws when no JSON object is present", () => {
     expect(() => parseVerdictText("no verdict here")).toThrow("missing JSON object")
   })
