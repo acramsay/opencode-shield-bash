@@ -1,5 +1,12 @@
 # Changelog
 
+# [1.1.0](https://github.com/acramsay/opencode-shield-bash/compare/v1.0.2...v1.1.0) (2026-09-12)
+
+
+### Features
+
+* the cache is now managed by sqlite and session specific ([1e76a2b](https://github.com/acramsay/opencode-shield-bash/commit/1e76a2be3806590cf6c85294ab3146e4098826d1))
+
 ## [1.0.2](https://github.com/acramsay/opencode-shield-bash/compare/v1.0.1...v1.0.2) (2026-09-11)
 
 
