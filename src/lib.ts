@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -24,7 +25,7 @@ export const POLICY_PROMPT = [
   "DG3 pipe-remote-to-interpreter: curl/wget output into a shell or interpreter, eval of fetched script",
   "DG4 elevate/erode security: sudo invocation, /etc rewrites, disabling security tooling, history shredding, privilege escalation",
   "DG5 shells/listeners: nc -e / nc -l exec, bash -i >& /dev/tcp, socat EXEC",
-  "DG6 secret exfil: credentials/keys/env/paths sent to a remote endpoint, keyloggers — includes piping a file command's output to a remote host",
+  "DG6 secret exfil: credentials/keys/env/paths reaching a remote endpoint, keyloggers — includes piping output to a remote host, and simply reading/printing a secrets file (cat/head/tail/etc.), since output is always relayed to the LLM, itself a remote endpoint",
   "DG7 resource bombs: fork bombs, unbounded recursive loops",
   "DG8 system-wide install: puts software on the machine rather than into the project — OS package managers (brew, apt/apt-get, dnf/yum, pacman, snap, apk) or global language installs (npm -g/--global, yarn global, gem, bare pip hitting the system/user site). Project-scoped installs (npm/bun/pnpm install, uv sync) and builds are OK; so are source-built tools into the toolchain's user bin dir (go install, cargo install).",
   "",
@@ -64,36 +65,87 @@ export const defaultConfig = (): ShieldBashConfig => {
   // os.homedir() resolves HOME on POSIX and USERPROFILE on Windows.
   const cacheRoot = join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "shield-bash")
   return {
-    cachePath: join(cacheRoot, "verdicts.json"),
+    cachePath: join(cacheRoot, "verdicts.db"),
     cacheTtlMs: Number(process.env.SHIELD_BASH_TTL_HOURS ?? 24) * 3_600_000,
   }
 }
 
-export type CacheEntry = { verdict: Verdict; ts: number }
+// Global cap across all sessions, guarding against rows that outlive their
+// session (e.g. a crash that never emits session.deleted). Normal cleanup
+// happens per-session via deleteSessionVerdicts.
+const MAX_CACHE_ROWS = 1000
 
-const isExpired = (entry: CacheEntry, ttlMs: number) => Date.now() - entry.ts > ttlMs
+type VerdictRow = {
+  decision: string
+  category: string | null
+  reason: string
+  alternative: string | null
+  ts: number
+}
 
-export async function readCache(path: string, ttlMs: number): Promise<Map<string, CacheEntry>> {
-  try {
-    const raw = (await Bun.file(path).json()) as Record<string, CacheEntry>
-    const map = new Map<string, CacheEntry>()
-    for (const [cmd, entry] of Object.entries(raw)) {
-      if (!isExpired(entry, ttlMs)) map.set(cmd, entry)
-    }
-    return map
-  } catch {
-    return new Map()
+export function openCache(path: string): Database {
+  const db = new Database(path, { create: true })
+  db.run("PRAGMA journal_mode = WAL")
+  db.run(
+    `CREATE TABLE IF NOT EXISTS verdicts (
+      session_id TEXT NOT NULL,
+      command TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      category TEXT,
+      reason TEXT NOT NULL,
+      alternative TEXT,
+      ts INTEGER NOT NULL,
+      PRIMARY KEY (session_id, command)
+    )`,
+  )
+  db.run("CREATE INDEX IF NOT EXISTS verdicts_ts ON verdicts (ts)")
+  return db
+}
+
+// Verdicts are scoped to the root session (subagents share their root's
+// judge, so they share its cache too). A miss or an expired row returns
+// null; an expired row is deleted on read rather than left for the cap.
+export function getCachedVerdict(
+  db: Database,
+  sessionID: string,
+  command: string,
+  ttlMs: number,
+): Verdict | null {
+  const row = db
+    .query<VerdictRow, [string, string]>(
+      "SELECT decision, category, reason, alternative, ts FROM verdicts WHERE session_id = ? AND command = ?",
+    )
+    .get(sessionID, command)
+  if (!row) return null
+  if (Date.now() - row.ts > ttlMs) {
+    db.query("DELETE FROM verdicts WHERE session_id = ? AND command = ?").run(sessionID, command)
+    return null
+  }
+  return {
+    decision: row.decision as Verdict["decision"],
+    category: row.category,
+    reason: row.reason,
+    alternative: row.alternative,
   }
 }
 
-export async function saveCache(path: string, map: Map<string, CacheEntry>): Promise<void> {
-  try {
-    if (map.size > 1000) {
-      const excess = map.size - 1000
-      for (const key of Array.from(map.keys()).slice(0, excess)) map.delete(key)
-    }
-    await Bun.write(path, JSON.stringify(Object.fromEntries(map)))
-  } catch {}
+export function setCachedVerdict(db: Database, sessionID: string, command: string, verdict: Verdict): void {
+  db.query(
+    "INSERT OR REPLACE INTO verdicts (session_id, command, decision, category, reason, alternative, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).run(sessionID, command, verdict.decision, verdict.category, verdict.reason, verdict.alternative, Date.now())
+  db.run(
+    `DELETE FROM verdicts WHERE rowid IN (
+      SELECT rowid FROM verdicts ORDER BY ts ASC
+      LIMIT MAX(0, (SELECT COUNT(*) FROM verdicts) - ${MAX_CACHE_ROWS})
+    )`,
+  )
+}
+
+// Called on the session.deleted event so a root session's verdicts don't
+// outlive it. Deleting by a subagent's id is a harmless no-op: subagents
+// never own rows, since caching is keyed by their root's session id.
+export function deleteSessionVerdicts(db: Database, sessionID: string): void {
+  db.query("DELETE FROM verdicts WHERE session_id = ?").run(sessionID)
 }
 
 const readJsonObject = (text: string, start: number): string | null => {

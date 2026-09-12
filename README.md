@@ -66,7 +66,7 @@ optionally a safer alternative. Categories, in short:
 - DG3 piping remote output into an interpreter
 - DG4 privilege elevation or security erosion (sudo, /etc rewrites, history shredding)
 - DG5 shells and listeners (nc -e, bash -i to /dev/tcp, socat EXEC)
-- DG6 secret exfiltration to a remote endpoint
+- DG6 secret exfiltration to a remote endpoint (also: reading a secrets file's output, since that output always reaches the LLM)
 - DG7 resource bombs (fork bombs, unbounded recursion)
 - DG8 system-wide installs (OS package managers, npm -g, bare pip; project-scoped installs are fine)
 
@@ -74,9 +74,14 @@ Whole pipelines are judged, so one bad segment denies the chain.
 
 ## Caching
 
-Verdicts are cached in `~/.cache/shield-bash/verdicts.json` (respecting `XDG_CACHE_HOME`),
-keyed by command string, expiring after the TTL, capped at 1000 entries. A cache hit skips
-the judge entirely.
+Verdicts are cached in a SQLite database at `~/.cache/shield-bash/verdicts.db` (respecting
+`XDG_CACHE_HOME`), keyed by `(root session id, command)`. A cache hit skips the judge
+entirely, so a command judged once is not re-judged on every repeat within the same root
+session; a new session re-judges it, by design.
+
+Rows are deleted when their root session is deleted (`session.deleted` event), so the cache
+never outlives the session it was judged for. The TTL and the 1000-row cap are a safety net
+for rows that never get that signal (e.g. a crash), not the primary eviction path.
 
 ## Known limitation
 

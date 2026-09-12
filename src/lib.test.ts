@@ -2,7 +2,16 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { CacheEntry, defaultConfig, POLICY_PROMPT, parseVerdictText, readCache, saveCache } from "./lib"
+import {
+  defaultConfig,
+  deleteSessionVerdicts,
+  getCachedVerdict,
+  openCache,
+  POLICY_PROMPT,
+  parseVerdictText,
+  setCachedVerdict,
+  Verdict,
+} from "./lib"
 
 describe("parseVerdictText", () => {
   test("parses a bare allow verdict", () => {
@@ -78,42 +87,52 @@ describe("parseVerdictText", () => {
 })
 
 describe("verdict cache", () => {
-  const cachePath = () => join(mkdtempSync(join(tmpdir(), "shield-bash-")), "verdicts.json")
+  const cachePath = () => join(mkdtempSync(join(tmpdir(), "shield-bash-")), "verdicts.db")
+  const allow: Verdict = { decision: "allow", category: null, reason: "", alternative: null }
 
-  test("round-trips entries through save and read", async () => {
-    const path = cachePath()
-    const entry: CacheEntry = {
-      verdict: { decision: "deny", category: "DG8", reason: "global install", alternative: null },
-      ts: Date.now(),
-    }
-    await saveCache(path, new Map([["npm i -g", entry]]))
-    const read = await readCache(path, 3_600_000)
-    expect(read.get("npm i -g")).toEqual(entry)
+  test("round-trips a verdict through set and get", () => {
+    const db = openCache(cachePath())
+    const entry: Verdict = { decision: "deny", category: "DG8", reason: "global install", alternative: null }
+    setCachedVerdict(db, "root-1", "npm i -g", entry)
+    expect(getCachedVerdict(db, "root-1", "npm i -g", 3_600_000)).toEqual(entry)
   })
 
-  test("drops expired entries on read", async () => {
-    const path = cachePath()
-    await saveCache(path, new Map([["old", { verdict: { decision: "allow", category: null, reason: "", alternative: null }, ts: 0 }]]))
-    expect((await readCache(path, 1_000)).size).toBe(0)
+  test("scopes verdicts to the session id", () => {
+    const db = openCache(cachePath())
+    setCachedVerdict(db, "root-1", "ls", allow)
+    expect(getCachedVerdict(db, "root-2", "ls", 3_600_000)).toBeNull()
   })
 
-  test("returns an empty map for a missing file", async () => {
-    expect((await readCache(join(cachePath(), "nope.json"), 3_600_000)).size).toBe(0)
+  test("drops and deletes an expired entry on read", () => {
+    const db = openCache(cachePath())
+    setCachedVerdict(db, "root-1", "old", allow)
+    db.run("UPDATE verdicts SET ts = 0")
+    expect(getCachedVerdict(db, "root-1", "old", 1_000)).toBeNull()
+    expect(db.query("SELECT COUNT(*) AS n FROM verdicts").get() as { n: number }).toEqual({ n: 0 })
   })
 
-  test("caps the cache at 1000 entries, evicting oldest inserted", async () => {
-    const path = cachePath()
-    const map = new Map<string, CacheEntry>()
-    for (let i = 0; i < 1005; i++) {
-      map.set(`cmd-${i}`, { verdict: { decision: "allow", category: null, reason: "", alternative: null }, ts: Date.now() })
-    }
-    await saveCache(path, map)
-    const read = await readCache(path, 3_600_000)
-    expect(read.size).toBe(1000)
-    expect(read.has("cmd-0")).toBe(false)
-    expect(read.has("cmd-4")).toBe(false)
-    expect(read.has("cmd-5")).toBe(true)
-    expect(read.has("cmd-1004")).toBe(true)
+  test("returns null for a missing entry", () => {
+    const db = openCache(cachePath())
+    expect(getCachedVerdict(db, "root-1", "nope", 3_600_000)).toBeNull()
+  })
+
+  test("caps the cache at 1000 rows, evicting oldest first", () => {
+    const db = openCache(cachePath())
+    for (let i = 0; i < 1005; i++) setCachedVerdict(db, "root-1", `cmd-${i}`, allow)
+    const count = db.query("SELECT COUNT(*) AS n FROM verdicts").get() as { n: number }
+    expect(count.n).toBe(1000)
+    expect(getCachedVerdict(db, "root-1", "cmd-4", 3_600_000)).toBeNull()
+    expect(getCachedVerdict(db, "root-1", "cmd-5", 3_600_000)).not.toBeNull()
+    expect(getCachedVerdict(db, "root-1", "cmd-1004", 3_600_000)).not.toBeNull()
+  })
+
+  test("deleteSessionVerdicts removes only that session's rows", () => {
+    const db = openCache(cachePath())
+    setCachedVerdict(db, "root-1", "ls", allow)
+    setCachedVerdict(db, "root-2", "ls", allow)
+    deleteSessionVerdicts(db, "root-1")
+    expect(getCachedVerdict(db, "root-1", "ls", 3_600_000)).toBeNull()
+    expect(getCachedVerdict(db, "root-2", "ls", 3_600_000)).not.toBeNull()
   })
 })
 

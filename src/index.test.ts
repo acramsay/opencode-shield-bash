@@ -58,11 +58,15 @@ const initPlugin = async (client: unknown) => {
   const prevCacheHome = process.env.XDG_CACHE_HOME
   process.env.XDG_CACHE_HOME = cacheRoot
   try {
-    const hooks = (await ShieldBash({ client, directory: cacheRoot } as never)) as Record<
-      string,
-      (input: unknown, output: unknown) => Promise<void>
-    >
-    return { gate: hooks["tool.execute.before"], cacheRoot }
+    const hooks = (await ShieldBash({ client, directory: cacheRoot } as never)) as {
+      "tool.execute.before": (input: unknown, output: unknown) => Promise<void>
+      event: (input: { event: unknown }) => Promise<void>
+    }
+    return {
+      gate: hooks["tool.execute.before"],
+      onEvent: (event: unknown) => hooks.event({ event }),
+      cacheRoot,
+    }
   } finally {
     if (prevCacheHome === undefined) delete process.env.XDG_CACHE_HOME
     else process.env.XDG_CACHE_HOME = prevCacheHome
@@ -169,5 +173,28 @@ describe("judge session lifecycle", () => {
     // the failed lookup is not memoized; a known session still works
     await gate(...bashCall("cmd-b", "root-1"))
     expect(state.creates).toBe(1)
+  })
+
+  test("session.deleted purges only that root's cached verdicts", async () => {
+    const { client, state } = makeClient({ "root-1": {}, "root-2": {} })
+    const { gate, onEvent } = await initPlugin(client)
+    await gate(...bashCall("cmd-a", "root-1"))
+    await gate(...bashCall("cmd-a", "root-2"))
+    expect(state.prompts).toBe(2)
+
+    await onEvent({ type: "session.deleted", properties: { info: { id: "root-1" } } })
+
+    await gate(...bashCall("cmd-a", "root-1")) // cache purged: re-judged
+    await gate(...bashCall("cmd-a", "root-2")) // still cached: no new prompt
+    expect(state.prompts).toBe(3)
+  })
+
+  test("an unrelated event type does not touch the cache", async () => {
+    const { client, state } = makeClient({ "root-1": {} })
+    const { gate, onEvent } = await initPlugin(client)
+    await gate(...bashCall("cmd-a", "root-1"))
+    await onEvent({ type: "session.updated", properties: { info: { id: "root-1" } } })
+    await gate(...bashCall("cmd-a", "root-1"))
+    expect(state.prompts).toBe(1)
   })
 })

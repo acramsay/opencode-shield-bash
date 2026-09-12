@@ -1,7 +1,15 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { mkdirSync } from "node:fs"
 import { dirname, join } from "node:path"
-import { defaultConfig, parseVerdictText, POLICY_PROMPT, readCache, saveCache } from "./lib"
+import {
+  defaultConfig,
+  deleteSessionVerdicts,
+  getCachedVerdict,
+  openCache,
+  parseVerdictText,
+  POLICY_PROMPT,
+  setCachedVerdict,
+} from "./lib"
 
 type FailureMode = "allow" | "deny" | "ask"
 
@@ -13,7 +21,7 @@ const MODEL_FALLBACK = { providerID: "vercel", modelID: "zai/glm-5.3-flash" }
 export const ShieldBash: Plugin = async ({ client, directory }) => {
   const config = defaultConfig()
   mkdirSync(dirname(config.cachePath), { recursive: true })
-  const cache = await readCache(config.cachePath, config.cacheTtlMs)
+  const cache = openCache(config.cachePath)
 
   // Loaded lazily. The server serves no requests until plugin init returns,
   // so a client call at init time would deadlock.
@@ -141,19 +149,26 @@ export const ShieldBash: Plugin = async ({ client, directory }) => {
   }
 
   return {
+    event: async ({ event }) => {
+      if (event.type !== "session.deleted") return
+      deleteSessionVerdicts(cache, event.properties.info.id)
+    },
     "tool.execute.before": async (input, output) => {
       if (input.tool !== "bash") return
       const command = output.args.command
       if (typeof command !== "string" || command.trim() === "") return
       await loadConfig()
 
-      const cached = cache.get(command)
+      let rootID: string
+      let cached: ReturnType<typeof getCachedVerdict>
       let verdict
       try {
+        rootID = await rootOf(input.sessionID)
+        cached = getCachedVerdict(cache, rootID, command, config.cacheTtlMs)
         if (cached) {
-          verdict = cached.verdict
+          verdict = cached
         } else {
-          const sessID = await ensureJudgeSession(await rootOf(input.sessionID))
+          const sessID = await ensureJudgeSession(rootID)
           const response = await promptJudge(sessID, command)
           if (response.error || !response.data) {
             throw new Error(`judge session error: ${JSON.stringify(response.error)}`)
@@ -176,10 +191,7 @@ export const ShieldBash: Plugin = async ({ client, directory }) => {
         )
       }
 
-      if (!cached) {
-        cache.set(command, { verdict, ts: Date.now() })
-        await saveCache(config.cachePath, cache)
-      }
+      if (!cached) setCachedVerdict(cache, rootID, command, verdict)
       if (verdict.decision === "deny") {
         const category = verdict.category ? `\nCategory: ${verdict.category}` : ""
         const alt = verdict.alternative ? `\nAlternative: ${verdict.alternative}` : ""
