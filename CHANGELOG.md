@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/acramsay/opencode-shield-bash/compare/v1.1.0...v1.1.1) (2026-09-13)
+
+
+### Bug Fixes
+
+* judge runs as an agent with tool calls disabled to prevent deadlocks ([166c0e3](https://github.com/acramsay/opencode-shield-bash/commit/166c0e3032d139f83f022848631e914d0c3a3628))
+
 # [1.1.0](https://github.com/acramsay/opencode-shield-bash/compare/v1.0.2...v1.1.0) (2026-09-12)
 
 
