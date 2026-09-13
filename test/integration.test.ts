@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { POLICY_PROMPT, parseVerdictText } from "../src/lib"
+import { parseVerdictText } from "../src/lib"
 
 // Drives fixture commands through a persistent judge session on the running
 // opencode web server. Set SHIELD_BASH_TEST_OPENCODE_URL to point at a
@@ -66,7 +66,7 @@ const judge = async (sessionID: string, command: string) => {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            system: POLICY_PROMPT,
+            agent: "shield-bash-judge",
             parts: [{ type: "text", text: `Command: ${command}\nReturn the JSON verdict.` }],
             model,
           }),

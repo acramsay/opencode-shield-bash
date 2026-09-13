@@ -15,6 +15,7 @@ type FailureMode = "allow" | "deny" | "ask"
 
 const DEFAULT_FAILURE: FailureMode = "deny"
 const MODEL_FALLBACK = { providerID: "vercel", modelID: "zai/glm-5.3-flash" }
+const JUDGE_AGENT = "shield-bash-judge"
 
 // Gates every bash command by prompting a second opencode session with the
 // policy in lib.ts.
@@ -63,6 +64,9 @@ export const ShieldBash: Plugin = async ({ client, directory }) => {
   // Entries are per-process and tiny, so they are left uncapped.
   const judgeByRoot = new Map<string, Promise<string>>()
   const rootBySession = new Map<string, Promise<string>>()
+  // The gate waits on this judge's verdict, so re-gating the judge's own bash
+  // would deadlock. Its bash is denied outright instead.
+  const judgeSessions = new Set<string>()
 
   // Walks the session's parent chain to its root, memoizing every hop.
   const rootOf = (sessionID: string): Promise<string> => {
@@ -117,6 +121,7 @@ export const ShieldBash: Plugin = async ({ client, directory }) => {
         if (judgeSession.error || !judgeSession.data) {
           throw new Error(`failed to create judge session: ${JSON.stringify(judgeSession.error)}`)
         }
+        judgeSessions.add(judgeSession.data.id)
         return judgeSession.data.id
       })
       .catch((err) => {
@@ -137,7 +142,7 @@ export const ShieldBash: Plugin = async ({ client, directory }) => {
       client.session.prompt({
         path: { id: judgeSessionID },
         body: {
-          system: POLICY_PROMPT,
+          agent: JUDGE_AGENT,
           parts: [{ type: "text", text: `Command: ${command}\nReturn the JSON verdict.` }] as const,
           model,
         } as never,
@@ -149,12 +154,28 @@ export const ShieldBash: Plugin = async ({ client, directory }) => {
   }
 
   return {
+    config: async (cfg) => {
+      cfg.agent ??= {}
+      cfg.agent[JUDGE_AGENT] = {
+        mode: "primary",
+        hidden: true,
+      prompt: POLICY_PROMPT,
+      temperature: 0,
+        // The server accepts "*" as a permission wildcard; the SDK type does not.
+        permission: { "*": "deny" } as never,
+      }
+    },
     event: async ({ event }) => {
       if (event.type !== "session.deleted") return
       deleteSessionVerdicts(cache, event.properties.info.id)
     },
     "tool.execute.before": async (input, output) => {
       if (input.tool !== "bash") return
+      if (judgeSessions.has(input.sessionID)) {
+        throw new Error(
+          "shield-bash: the judge cannot run commands. Reply with the JSON verdict for the command you were given.",
+        )
+      }
       const command = output.args.command
       if (typeof command !== "string" || command.trim() === "") return
       await loadConfig()

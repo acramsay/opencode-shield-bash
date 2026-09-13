@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ShieldBash } from "./index"
+import { POLICY_PROMPT } from "./lib"
 
 type FakeSession = { parentID?: string }
 
@@ -15,6 +16,7 @@ const makeClient = (
     creates: 0,
     createdParents: [] as string[],
     prompts: 0,
+    promptBodies: [] as Array<Record<string, unknown>>,
     gets: 0,
     promptActive: 0,
     promptMaxActive: 0,
@@ -37,8 +39,9 @@ const makeClient = (
         if (opts?.failFirstCreate && state.creates === 1) return { error: { message: "boom" } }
         return { data: { id: `judge-${state.creates}` } }
       },
-      prompt: async () => {
+      prompt: async (args?: { body?: Record<string, unknown> }) => {
         state.prompts++
+        state.promptBodies.push(args?.body ?? {})
         if (!opts?.slowPrompt) {
           return { data: { parts: [{ type: "text", text: '{"decision":"allow"}' }] } }
         }
@@ -61,10 +64,12 @@ const initPlugin = async (client: unknown) => {
     const hooks = (await ShieldBash({ client, directory: cacheRoot } as never)) as {
       "tool.execute.before": (input: unknown, output: unknown) => Promise<void>
       event: (input: { event: unknown }) => Promise<void>
+      config: (cfg: unknown) => Promise<void>
     }
     return {
       gate: hooks["tool.execute.before"],
       onEvent: (event: unknown) => hooks.event({ event }),
+      registerConfig: hooks.config,
       cacheRoot,
     }
   } finally {
@@ -196,5 +201,43 @@ describe("judge session lifecycle", () => {
     await onEvent({ type: "session.updated", properties: { info: { id: "root-1" } } })
     await gate(...bashCall("cmd-a", "root-1"))
     expect(state.prompts).toBe(1)
+  })
+})
+
+describe("judge isolation", () => {
+  test("the config hook registers the judge agent: hidden, toolless, policy prompt", async () => {
+    const { client } = makeClient({ "root-1": {} })
+    const { registerConfig } = await initPlugin(client)
+    const cfg = {} as { agent?: Record<string, Record<string, unknown>> }
+    await registerConfig(cfg)
+    expect(cfg.agent?.["shield-bash-judge"]).toMatchObject({
+      mode: "primary",
+      hidden: true,
+      prompt: POLICY_PROMPT,
+      temperature: 0,
+      permission: { "*": "deny" },
+    })
+  })
+
+  test("judge prompts select the judge agent and carry no per-prompt system", async () => {
+    const { client, state } = makeClient({ "root-1": {} })
+    const { gate } = await initPlugin(client)
+    await gate(...bashCall("cmd-a", "root-1"))
+    const body = state.promptBodies[0] as { agent?: string; system?: string }
+    expect(body.agent).toBe("shield-bash-judge")
+    expect(body.system).toBeUndefined()
+  })
+
+  test("a judge session cannot run bash: no reentrant gate", async () => {
+    const { client, state } = makeClient({ "root-1": {} })
+    const { gate } = await initPlugin(client)
+    await gate(...bashCall("cmd-a", "root-1")) // creates judge-1
+    const before = { ...state }
+    await expect(gate(...bashCall("cmd-x", "judge-1"))).rejects.toThrow(
+      "the judge cannot run commands",
+    )
+    expect(state.creates).toBe(before.creates)
+    expect(state.prompts).toBe(before.prompts)
+    expect(state.gets).toBe(before.gets)
   })
 })

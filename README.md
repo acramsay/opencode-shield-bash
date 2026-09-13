@@ -12,6 +12,11 @@ matters for more than bookkeeping: it is reachable with the TUI's child-session 
 stays out of the roots-only session list, is deleted with its parent, and is never
 auto-shared. The judge transcript doubles as the audit trail.
 
+The judge runs as a dedicated registered agent, `shield-bash-judge` which disables tool calls
+entirely and uses the policy prompt as its system prompt. A judge that tries to run the command
+anyway due to e.g. an opencode bug gets an instructive denial instead of a re-gate. A judge gating
+its own bash produces a deadlock on the verdict it still owes.
+
 ## Install
 
 Add the package to your `opencode.json` plugin array:
@@ -66,7 +71,8 @@ optionally a safer alternative. Categories, in short:
 - DG3 piping remote output into an interpreter
 - DG4 privilege elevation or security erosion (sudo, /etc rewrites, history shredding)
 - DG5 shells and listeners (nc -e, bash -i to /dev/tcp, socat EXEC)
-- DG6 secret exfiltration to a remote endpoint (also: reading a secrets file's output, since that output always reaches the LLM)
+- DG6 secret exfiltration to a remote endpoint (also: reading a secrets file's output, since that
+  output always reaches the LLM)
 - DG7 resource bombs (fork bombs, unbounded recursion)
 - DG8 system-wide installs (OS package managers, npm -g, bare pip; project-scoped installs are fine)
 
@@ -85,12 +91,11 @@ for rows that never get that signal (e.g. a crash), not the primary eviction pat
 
 ## Known limitation
 
-opencode's `permission.ask` hook is declared in `@opencode-ai/plugin` types but never
-triggered by the server ([anomalyco/opencode#7006](https://github.com/anomalyco/opencode/issues/7006)).
-`tool.execute.before` can only throw (deny) or return (defer to config), so binary
-allow/deny plus config-deferred `ask` is the complete behavior space today. Once upstream
-wires the hook, the tri-state verdict is future work. The policy and the DG categories stay
-fixed either way.
+opencode's `permission.ask` hook is declared in `@opencode-ai/plugin` types but never triggered by
+the server ([anomalyco/opencode#7006](https://github.com/anomalyco/opencode/issues/7006)).
+`tool.execute.before` can only throw (deny) or return (defer to config), so binary allow/deny plus
+config-deferred `ask` is the complete behavior space today. Once upstream wires the hook, the
+tri-state verdict is future work. The policy and the DG categories stay fixed either way.
 
 ## Development
 
@@ -108,7 +113,9 @@ The integration suite drives the commands in `test/fixtures.json` through a runn
 opencode serve --port 4096 --hostname 127.0.0.1
 ```
 
-It needs a provider API key and a reachable server; otherwise it skips. Each fixture gets a
+It needs a provider API key and a reachable server; otherwise it skips. Run the server from the
+repo root so the plugin — and the `shield-bash-judge` agent it registers — is loaded; the suite
+prompts that agent directly. Each fixture gets a
 fresh judge session (a reused one recycles earlier reasoning into later verdicts), tests run
 serially, and each gets one retry to absorb provider flakiness.
 
