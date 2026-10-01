@@ -25,6 +25,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
+      id-token: write # OIDC for npm trusted publishing
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,4 +38,3 @@ jobs:
       - run: npx semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
