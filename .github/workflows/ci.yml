@@ -13,8 +13,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      # Integration tests need a running opencode serve and a provider key;
-      # they are local/opt-in. CI covers the unit surface.
+      # Integration tests spawn a real opencode binary; they are local/opt-in.
+      # CI covers the unit surface.
       - run: bun test src/
 
   release:

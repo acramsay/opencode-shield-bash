@@ -1,4 +1,13 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@acramsay/opencode-shield-bash@file:."]
+  "plugins": [
+    {
+      "package": "./src",
+      "options": {
+        "providerID": "openrouter",
+        "modelID": "z-ai/glm-5.3-flash",
+        "failure": "deny"
+      }
+    }
+  ]
 }

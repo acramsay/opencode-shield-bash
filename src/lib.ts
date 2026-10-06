@@ -1,6 +1,8 @@
 import { Database } from "bun:sqlite"
+import { mkdirSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
+import { z } from "zod"
 
 export type Verdict = {
   decision: "allow" | "deny"
@@ -57,17 +59,49 @@ export const POLICY_PROMPT = [
   "Return only the JSON object.",
 ].join("\n")
 
+// The plugin's configuration surface, supplied as `options` on its entry in
+// opencode.json's `plugins` array. Unknown keys are rejected so a typo in a
+// dotfiles-managed config fails loudly instead of silently using a default.
+export const OptionsSchema = z.strictObject({
+  providerID: z.string().min(1),
+  modelID: z.string().min(1),
+  failure: z.enum(["allow", "deny", "ask"]).default("deny"),
+  timeoutMs: z.number().int().positive().default(10_000),
+  cachePath: z.string().min(1).optional(),
+  ttlHours: z.number().positive().default(24),
+})
+
 export type ShieldBashConfig = {
+  providerID: string
+  modelID: string
+  failure: "allow" | "deny" | "ask"
+  timeoutMs: number
   cachePath: string
   cacheTtlMs: number
 }
 
-export const defaultConfig = (): ShieldBashConfig => {
+export function parseConfig(raw: unknown): ShieldBashConfig {
+  let options: z.infer<typeof OptionsSchema>
+  try {
+    options = OptionsSchema.parse(raw ?? {})
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      const detail = err.issues
+        .map((issue) => `${issue.path.join(".") || "(options)"}: ${issue.message}`)
+        .join("; ")
+      throw new Error(`shield-bash: invalid plugin options — ${detail}`)
+    }
+    throw err
+  }
   // os.homedir() resolves HOME on POSIX and USERPROFILE on Windows.
   const cacheRoot = join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "shield-bash")
   return {
-    cachePath: join(cacheRoot, "verdicts.db"),
-    cacheTtlMs: Number(process.env.SHIELD_BASH_TTL_HOURS ?? 24) * 3_600_000,
+    providerID: options.providerID,
+    modelID: options.modelID,
+    failure: options.failure,
+    timeoutMs: options.timeoutMs,
+    cachePath: options.cachePath ?? join(cacheRoot, "verdicts.db"),
+    cacheTtlMs: options.ttlHours * 3_600_000,
   }
 }
 
@@ -85,6 +119,7 @@ type VerdictRow = {
 }
 
 export function openCache(path: string): Database {
+  mkdirSync(dirname(path), { recursive: true })
   const db = new Database(path, { create: true })
   db.run("PRAGMA journal_mode = WAL")
   db.run(

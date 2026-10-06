@@ -3,11 +3,11 @@ import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
-  defaultConfig,
   deleteSessionVerdicts,
   getCachedVerdict,
   openCache,
   POLICY_PROMPT,
+  parseConfig,
   parseVerdictText,
   setCachedVerdict,
   Verdict,
@@ -134,6 +134,11 @@ describe("verdict cache", () => {
     expect(getCachedVerdict(db, "root-1", "ls", 3_600_000)).toBeNull()
     expect(getCachedVerdict(db, "root-2", "ls", 3_600_000)).not.toBeNull()
   })
+
+  test("creates the cache directory when it is missing", () => {
+    const db = openCache(join(mkdtempSync(join(tmpdir(), "shield-bash-")), "nested", "verdicts.db"))
+    expect(db.query("SELECT COUNT(*) AS n FROM verdicts").get() as { n: number }).toEqual({ n: 0 })
+  })
 })
 
 describe("POLICY_PROMPT", () => {
@@ -149,8 +154,37 @@ describe("POLICY_PROMPT", () => {
   })
 })
 
-describe("defaultConfig", () => {
-  test("uses a 24h TTL unless overridden", () => {
-    expect(defaultConfig().cacheTtlMs).toBe(24 * 3_600_000)
+describe("parseConfig", () => {
+  const base = { providerID: "openrouter", modelID: "z-ai/glm-5.3-flash" }
+
+  test("applies defaults for the optional fields", () => {
+    const config = parseConfig(base)
+    expect(config.failure).toBe("deny")
+    expect(config.timeoutMs).toBe(10_000)
+    expect(config.cacheTtlMs).toBe(24 * 3_600_000)
+    expect(config.cachePath.endsWith("shield-bash/verdicts.db")).toBe(true)
+  })
+
+  test("honors explicit values", () => {
+    const config = parseConfig({
+      ...base,
+      failure: "ask",
+      timeoutMs: 5_000,
+      ttlHours: 1,
+      cachePath: "/tmp/verdicts.db",
+    })
+    expect(config).toMatchObject({ failure: "ask", timeoutMs: 5_000, cacheTtlMs: 3_600_000, cachePath: "/tmp/verdicts.db" })
+  })
+
+  test("rejects missing required fields with a clear message", () => {
+    expect(() => parseConfig({ modelID: "m" })).toThrow(/invalid plugin options.*providerID/)
+  })
+
+  test("rejects an invalid failure mode", () => {
+    expect(() => parseConfig({ ...base, failure: "maybe" })).toThrow(/failure/)
+  })
+
+  test("rejects unknown keys so a typo cannot silently default", () => {
+    expect(() => parseConfig({ ...base, failur: "deny" })).toThrow(/failur/)
   })
 })

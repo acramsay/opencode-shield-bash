@@ -12,7 +12,7 @@ config surface — this file covers working in the repo itself.
 bun install
 bun run typecheck        # tsc --noEmit
 bun run test              # bun test src/ — unit: verdict parsing, cache, prompt shape
-bun run test:integration  # fixtures through a live judge; needs opencode serve + provider key, else skips
+bun run test:integration  # spawns a real opencode against a local mock provider; skips if the binary is absent
 ```
 
 Run `typecheck` and `test` after any change to `src/`. CI runs both on every push and PR; it
@@ -21,27 +21,31 @@ server and provider credentials — that suite is local/opt-in.
 
 ## Local plugin development
 
-`opencode.json` at the repo root already loads this plugin from source:
+`opencode.json` at the repo root loads this plugin from source:
 
 ```json
-{ "plugin": ["@acramsay/opencode-shield-bash@file:."] }
+{ "plugins": [{ "package": "./src", "options": { "providerID": "openrouter", "modelID": "z-ai/glm-5.3-flash", "failure": "deny" } }] }
 ```
 
-Just run `opencode` from this directory — no separate setup needed. This works, rather than
-double-loading alongside a global npm install of the same plugin, because opencode's plugin
-array is deduped by resolved package identity (npm name, or exact `file:` URL), not by the
-literal spec string, and project config wins over global for the same identity. Confirmed via
-`opencode debug config`: with a global npm entry for `@acramsay/opencode-shield-bash` already
-present, adding this project config collapses to exactly one entry, sourced locally.
+V2 resolves a local plugin entry as a **directory** and loads its `index.ts`. A bare
+`@scope/name@file:.` npm spec does not work here — the loader reports `Plugin entrypoint not
+found`. Just run `opencode` from this directory; no separate setup needed.
 
-`file:` specs install as symlinks into `node_modules` (not copies), so edits to `src/` take
-effect on the next opencode restart — no reinstall step. Config itself is read once at
-startup, so restart opencode after editing `src/`, `opencode.json`, or any other config file.
+The plugin reads its configuration from `ctx.options`, so the object form (with `options`) is
+required. The provider/model in this file only affects interactive use of the repo — the test
+suite configures its own mock provider and never reads this file.
+
+Edits to `src/` take effect on the next opencode restart; config is read once at startup, so
+restart opencode after changing `src/`, `opencode.json`, or any other config file.
+
+The published npm package is a different plugin identity from the local `./src` directory, so
+once a v2 version is published the global install and this local entry would both load (two
+judges). Disable the global entry in the repo config when that happens.
 
 Two commands help verify this kind of thing directly rather than guessing from source:
 
-- `opencode debug config` — dumps the fully merged config, including `plugin_origins` (which
-  file declared each plugin, and its resolved scope)
+- `opencode debug config` — lists the configuration documents and directories OpenCode merged,
+  with their paths (which files contributed, in order)
 - `opencode debug paths` — shows resolved config/data/cache/state directories, including where
   env var overrides (`XDG_CONFIG_HOME`, `OPENCODE_CONFIG`, `OPENCODE_CONFIG_DIR`) actually land
 
