@@ -61,5 +61,7 @@ Two commands help verify this kind of thing directly rather than guessing from s
 
 Trunk-based: work merges to `main`, and semantic-release runs in CI on every push to `main`.
 Conventional commits drive version bumps (`feat` → minor, `fix` → patch, breaking → major).
-Never push a `v*` tag by hand, and never publish from a local machine — see README.md
+Both breaking forms are recognized — `feat!:`/`fix!:` and a `BREAKING CHANGE:` footer — because
+the `conventionalcommits` preset is configured explicitly (the default `angular` preset ignores
+the `!`). Never push a `v*` tag by hand, and never publish from a local machine — see README.md
 "Releases" for details.
