@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.0.1](https://github.com/acramsay/opencode-shield-bash/compare/v2.0.0...v2.0.1) (2026-10-06)
+
+### Bug Fixes
+
+* prevent conflicting name for local dev. Protect against AFT's "bash" tool ([983a2cb](https://github.com/acramsay/opencode-shield-bash/commit/983a2cb50e3c22cb52c624e2f59c3419a7182b54))
+
 ## [2.0.0](https://github.com/acramsay/opencode-shield-bash/compare/v1.1.1...v2.0.0) (2026-10-06)
 
 ### ⚠ BREAKING CHANGES
