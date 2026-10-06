@@ -21,11 +21,24 @@ server and provider credentials — that suite is local/opt-in.
 
 ## Local plugin development
 
-`opencode.json` at the repo root loads this plugin from source:
+`opencode.json` at the repo root loads this plugin from source and disables the published
+package:
 
 ```json
-{ "plugins": [{ "package": "./src", "options": { "providerID": "openrouter", "modelID": "z-ai/glm-5.3-flash", "failure": "deny" } }] }
+{
+  "plugins": [
+    "-shield-bash",
+    { "package": "./src/dev", "options": { "providerID": "openrouter", "modelID": "z-ai/glm-5.3-flash", "failure": "deny" } }
+  ]
+}
 ```
+
+`src/dev/index.ts` is a thin entrypoint over `src/index.ts` that registers under the id
+`shield-bash-dev`. V2 rejects two plugins with the same id, and the published package claims
+`shield-bash`, so the dev entry needs its own id to load alongside it. The `-shield-bash` control
+disables the inherited published entry; without it the published plugin wins and the source entry
+fails with `Duplicate plugin ID: shield-bash`. The `src/dev/` directory is not in `package.json`
+`files`, so it is never published.
 
 V2 resolves a local plugin entry as a **directory** and loads its `index.ts`. A bare
 `@scope/name@file:.` npm spec does not work here — the loader reports `Plugin entrypoint not
@@ -37,10 +50,6 @@ suite configures its own mock provider and never reads this file.
 
 Edits to `src/` take effect on the next opencode restart; config is read once at startup, so
 restart opencode after changing `src/`, `opencode.json`, or any other config file.
-
-The published npm package is a different plugin identity from the local `./src` directory, so
-once a v2 version is published the global install and this local entry would both load (two
-judges). Disable the global entry in the repo config when that happens.
 
 Two commands help verify this kind of thing directly rather than guessing from source:
 

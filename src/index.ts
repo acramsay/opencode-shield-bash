@@ -4,6 +4,10 @@ import { parseConfig, POLICY_PROMPT } from "./lib"
 
 const ID = "shield-bash"
 
+// The host's command tool is `shell`, but AFT registers its own under `bash`.
+// Gate both names so neither shell surface bypasses the judge.
+const SHELL_TOOLS = new Set(["shell", "bash"])
+
 export async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup> {
   const config = parseConfig(ctx.options)
   const judge = createJudge(ctx, config)
@@ -30,7 +34,7 @@ export async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup> {
   })
 
   await ctx.tool.hook("execute.before", async (event) => {
-    if (event.tool !== "shell") return
+    if (!SHELL_TOOLS.has(event.tool)) return
     // The judge has no tools, so this is unreachable today; deny anyway rather
     // than risk a future change re-gating the judge and deadlocking its verdict.
     if (judge.isJudgeSession(event.sessionID)) {

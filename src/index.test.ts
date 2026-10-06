@@ -141,7 +141,8 @@ const gate = (
   command: string,
   sessionID: string,
   callID = command,
-) => before({ tool: "shell", sessionID, agent: "build", messageID: "msg", id: callID, input: { command } })
+  tool = "shell",
+) => before({ tool, sessionID, agent: "build", messageID: "msg", id: callID, input: { command } })
 
 const tick = () => new Promise((r) => setTimeout(r, 10))
 
@@ -287,6 +288,20 @@ describe("judge isolation", () => {
     expect(state.creates).toBe(before.creates)
     expect(state.prompts).toBe(before.prompts)
     expect(state.gets).toBe(before.gets)
+  })
+})
+
+describe("tool gating", () => {
+  test("the AFT bash tool is gated like the host shell tool", async () => {
+    const { state, beforeHandlers } = await initPlugin({ "root-1": {} })
+    await gate(beforeHandlers[0], "ls", "root-1", "call-1", "bash")
+    expect(state.prompts).toBe(1)
+  })
+
+  test("an unrelated tool name is not gated", async () => {
+    const { state, beforeHandlers } = await initPlugin({ "root-1": {} })
+    await expect(gate(beforeHandlers[0], "ls", "root-1", "call-1", "read")).resolves.toBeUndefined()
+    expect(state.prompts).toBe(0)
   })
 })
 
