@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.0.0](https://github.com/acramsay/opencode-shield-bash/compare/v1.1.1...v2.0.0) (2026-10-06)
+
+### ⚠ BREAKING CHANGES
+
+* migrate to opencode v2
+
+### Features
+
+* migrate to opencode v2 ([8f62121](https://github.com/acramsay/opencode-shield-bash/commit/8f621215a8d98a317d60ccbc8138b7032d9de13d))
+
+### Bug Fixes
+
+* **release:** pin conventionalcommits to v9 ([a0b2907](https://github.com/acramsay/opencode-shield-bash/commit/a0b29076fb3e65e943403e054870aed6ddc67ab9))
+
 ## [1.1.1](https://github.com/acramsay/opencode-shield-bash/compare/v1.1.0...v1.1.1) (2026-09-13)
 
 
