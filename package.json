@@ -6,12 +6,16 @@
   "license": "MIT",
   "main": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./rpc": "./src/rpc.ts",
+    "./tui": "./src/tui.tsx"
   },
   "files": [
     "src/index.ts",
     "src/judge.ts",
-    "src/lib.ts"
+    "src/lib.ts",
+    "src/rpc.ts",
+    "src/tui.tsx"
   ],
   "publishConfig": {
     "access": "public"
@@ -84,5 +88,10 @@
   },
   "dependencies": {
     "zod": "^4.6.5"
+  },
+  "peerDependencies": {
+    "@opentui/core": ">=0.6.6",
+    "@opentui/solid": ">=0.6.6",
+    "solid-js": ">=1.9.0"
   }
 }
