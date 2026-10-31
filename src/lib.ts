@@ -312,6 +312,13 @@ export function deleteSessionEvents(db: Database, sessionID: string): void {
   db.query("DELETE FROM shield_events WHERE session_id = ?").run(sessionID)
 }
 
+export function listRecordedSessions(db: Database): string[] {
+  const rows = db
+    .query<{ session_id: string }, []>("SELECT DISTINCT session_id FROM shield_events")
+    .all()
+  return rows.map((row) => row.session_id)
+}
+
 export function pruneOrphanEvents(db: Database, liveSessionIds: readonly string[]): number {
   if (liveSessionIds.length === 0) return db.query("DELETE FROM shield_events").run().changes
   const placeholders = liveSessionIds.map(() => "?").join(", ")

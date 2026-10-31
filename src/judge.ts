@@ -2,6 +2,7 @@ import type { Plugin } from "@opencode/plugin"
 import {
   deleteSessionEvents,
   emptyCounters,
+  listRecordedSessions,
   loadCounters,
   loadDedup,
   openDb,
@@ -36,6 +37,7 @@ export type Judge = {
   onPermissionAsked(event: { id: string; source?: { type: "tool"; id: string } }): void
   onPermissionReplied(event: { requestID: string; reply: "once" | "always" | "reject" }): void
   deleteSession(sessionID: string): void
+  reconcile(): Promise<void>
   close(): void
 }
 
@@ -54,6 +56,15 @@ const JUDGE_INSTRUCTIONS = "Return the JSON verdict."
 // reported by the API.
 class JudgeTimeoutError extends Error {}
 class InvalidVerdictError extends Error {}
+
+// The client rethrows a declared 404 as a plain Error carrying the server's
+// `_tag` and copying it onto `name`, so the error class itself is not available
+// here.
+const isSessionNotFound = (err: unknown): boolean => {
+  if (typeof err !== "object" || err === null) return false
+  const tagged = err as { _tag?: unknown; name?: unknown }
+  return tagged._tag === "SessionNotFoundError" || tagged.name === "SessionNotFoundError"
+}
 
 export function createJudge(
   ctx: Plugin.Context,
@@ -348,6 +359,20 @@ export function createJudge(
     }
   }
 
+  // A session the server no longer knows about is a crash orphan or a manual
+  // deletion, so its rows are dropped. Any other failure, such as the server
+  // being down or an auth error, must not lose data, so the rows stay for the
+  // next sweep.
+  const reconcile = async (): Promise<void> => {
+    for (const sessionID of listRecordedSessions(db)) {
+      try {
+        await ctx.session.get({ sessionID })
+      } catch (err) {
+        if (isSessionNotFound(err)) deleteSessionEvents(db, sessionID)
+      }
+    }
+  }
+
   const deleteSession = (sessionID: string): void => {
     deleteSessionEvents(db, sessionID)
     states.delete(sessionID)
@@ -365,6 +390,7 @@ export function createJudge(
     onPermissionAsked,
     onPermissionReplied,
     deleteSession,
+    reconcile,
     // The DB handle is shared across per-location setups, so this plugin's
     // cleanup must not close it.
     close: () => {},

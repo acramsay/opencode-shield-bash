@@ -6,6 +6,7 @@ import { join } from "node:path"
 import {
   deleteSessionEvents,
   emptyCounters,
+  listRecordedSessions,
   loadCounters,
   loadDedup,
   openDb,
@@ -153,6 +154,18 @@ describe("event storage", () => {
     deleteSessionEvents(db, "root-1")
     const remaining = db.query("SELECT session_id FROM shield_events").all() as { session_id: string }[]
     expect(remaining.map((r) => r.session_id)).toEqual(["root-2"])
+  })
+
+  test("lists each recorded session once", () => {
+    const db = freshDb()
+    recordEvent(db, event({ sessionID: "root-1", command: "a", outcome: "allow" }))
+    recordEvent(db, event({ sessionID: "root-1", command: "b", outcome: "deny" }))
+    recordEvent(db, event({ sessionID: "root-2", command: "c", outcome: "allow" }))
+    expect(listRecordedSessions(db).sort()).toEqual(["root-1", "root-2"])
+  })
+
+  test("lists nothing for an empty log", () => {
+    expect(listRecordedSessions(freshDb())).toEqual([])
   })
 
   test("updates an ask's resolution in place", () => {

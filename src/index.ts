@@ -21,6 +21,10 @@ export async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup> {
       .catch(() => {})
   })
 
+  // Fire-and-forget: the sweep must never delay startup, and a failure just
+  // leaves the rows for the next run.
+  void judge.reconcile().catch(() => {})
+
   // The judge runs as an ordinary session, but must not inherit the host's
   // agent prompt or tools. The context hook replaces the system prompt with the
   // policy, empties the tool set, and pins temperature to zero.

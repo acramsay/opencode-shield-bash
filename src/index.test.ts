@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import { setup } from "./index"
-import { POLICY_PROMPT } from "./lib"
+import { openDb, POLICY_PROMPT, recordEvent } from "./lib"
 
 type FakeSession = { parentID?: string }
 
@@ -14,6 +14,8 @@ type FakeOptions = {
   slowPrompt?: boolean
   failPrompt?: boolean
   verdictText?: string
+  seed?: string[]
+  getErrors?: Record<string, Error>
 }
 
 // Minimal fake of the v2 plugin context surface the plugin touches.
@@ -46,6 +48,8 @@ const makeCtx = (sessions: Record<string, FakeSession>, opts: FakeOptions = {}) 
   const session = {
     get: async ({ sessionID }: { sessionID: string }) => {
       state.gets++
+      const custom = opts.getErrors?.[sessionID]
+      if (custom) throw custom
       const found = sessions[sessionID]
       if (!found) throw new Error("session not found")
       return { id: sessionID, parentID: found.parentID }
@@ -135,9 +139,16 @@ const makeCtx = (sessions: Record<string, FakeSession>, opts: FakeOptions = {}) 
 
 const initPlugin = async (sessions: Record<string, FakeSession>, opts: FakeOptions = {}) => {
   const dir = mkdtempSync(join(tmpdir(), "shield-bash-test-"))
-  const made = makeCtx(sessions, { ...opts, options: { dbPath: join(dir, "sqlite.db"), ...(opts.options ?? {}) } })
+  const options = { dbPath: join(dir, "sqlite.db"), ...(opts.options ?? {}) }
+  if (opts.seed) {
+    const db = openDb(options.dbPath)
+    for (const sessionID of opts.seed) {
+      recordEvent(db, { sessionID, command: "seed", ts: 1, outcome: "allow", cached: 0 })
+    }
+  }
+  const made = makeCtx(sessions, { ...opts, options })
   await setup(made.ctx as unknown as Plugin.Context)
-  return made
+  return { ...made, dbPath: options.dbPath }
 }
 
 const gate = (
@@ -431,5 +442,34 @@ describe("failure modes", () => {
     permissionHandlers[0](second)
     expect(second.effect).toBe("allow")
     expect(second.message).toBeUndefined()
+  })
+})
+
+describe("startup reconciliation", () => {
+  const remaining = (dbPath: string) => {
+    const db = openDb(dbPath)
+    return (db.query("SELECT DISTINCT session_id FROM shield_events").all() as { session_id: string }[])
+      .map((row) => row.session_id)
+      .sort()
+  }
+
+  test("deletes rows only for sessions the server reports missing", async () => {
+    const notFound = Object.assign(new Error("session not found"), { _tag: "SessionNotFoundError" })
+    const { dbPath } = await initPlugin(
+      { "live-1": {} },
+      { seed: ["live-1", "gone-1"], getErrors: { "gone-1": notFound } },
+    )
+    await tick()
+    expect(remaining(dbPath)).toEqual(["live-1"])
+  })
+
+  test("leaves rows intact when the lookup fails for another reason", async () => {
+    const boom = new Error("connection refused")
+    const { dbPath } = await initPlugin(
+      { "live-1": {} },
+      { seed: ["live-1", "flaky-1"], getErrors: { "flaky-1": boom } },
+    )
+    await tick()
+    expect(remaining(dbPath)).toEqual(["flaky-1", "live-1"])
   })
 })
