@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { emptyCounters, type Counters } from "./lib"
-import { formatCounters } from "./tui"
+import { formatCounters, formatSummary, type CounterLine, type SummarySegment } from "./tui"
 
 const populated: Counters = {
   allow: 42,
@@ -17,56 +17,60 @@ const populated: Counters = {
   waitMs: 12_300,
 }
 
+const plain = (segments: SummarySegment[]) => segments.map((segment) => segment.text).join("")
+
+describe("formatSummary", () => {
+  test("counts allow and deny", () => {
+    expect(plain(formatSummary(emptyCounters()))).toBe("0 ✓   0 🛡")
+    expect(plain(formatSummary(populated))).toBe("42 ✓   3 🛡")
+  })
+
+  test("tags each count and icon with a role", () => {
+    expect(formatSummary(populated)).toEqual([
+      { text: "42 ✓", role: "allow" },
+      { text: "   3 🛡", role: "deny" },
+    ])
+  })
+})
+
 describe("formatCounters", () => {
-  test("zero state renders every line with placeholders", () => {
-    expect(formatCounters(emptyCounters())).toEqual([
-      " 0 ✓   0 ✕   0 ?",
-      " cached:  0✓  0✕",
-      " denied:  none",
-      " asked:   0 once  0 always  0 reject",
-      " errors:  none",
-      " wait:    0.0s",
+  const rendered = (lines: CounterLine[]) =>
+    lines.map((line) => `${line.label}: ${plain(line.segments)}`)
+
+  test("zero state renders every line", () => {
+    expect(rendered(formatCounters(emptyCounters()))).toEqual([
+      "Cached: 0 ✓   0 🛡",
+      "Questions & Errors: 0 ?   0 x",
+      "Wait Time: 0.0s",
     ])
   })
 
   test("populated state matches the spec shape", () => {
-    expect(formatCounters(populated)).toEqual([
-      " 42 ✓   3 ✕   2 ?",
-      " cached:  30✓  2✕",
-      " denied:  DG1×2 DG8×1",
-      " asked:   1 once  1 always  0 reject",
-      " errors:  1 timeout  2 inference",
-      " wait:    12.3s",
+    expect(rendered(formatCounters(populated))).toEqual([
+      "Cached: 30 ✓   2 🛡",
+      "Questions & Errors: 2 ?   3 x",
+      "Wait Time: 12.3s",
     ])
   })
 
-  test("categories and error kinds are sorted deterministically", () => {
-    const counters: Counters = {
-      ...emptyCounters(),
-      denyByCategory: { DG8: 1, DG1: 2, DG3: 5 },
-      errorByKind: { inference: 2, "invalid-verdict": 1, timeout: 3 },
-    }
-    const lines = formatCounters(counters)
-    expect(lines[2]).toBe(" denied:  DG1×2 DG3×5 DG8×1")
-    expect(lines[4]).toBe(" errors:  3 timeout  2 inference  1 invalid-verdict")
+  test("colors each metric by role", () => {
+    expect(formatCounters(populated)[0].segments).toEqual([
+      { text: "30 ✓", role: "allow" },
+      { text: "   2 🛡", role: "deny" },
+    ])
+    expect(formatCounters(populated)[1].segments).toEqual([
+      { text: "2 ?", role: "ask" },
+      { text: "   3 x", role: "error" },
+    ])
   })
 
-  test("unknown error kinds sort after known ones", () => {
-    const counters: Counters = {
-      ...emptyCounters(),
-      errorByKind: { zebra: 1, timeout: 2 },
-    }
-    expect(formatCounters(counters)[4]).toBe(" errors:  2 timeout  1 zebra")
-  })
-
-  test("pending asks appear only when non-zero", () => {
-    const pending: Counters = { ...emptyCounters(), askPending: 2 }
-    expect(formatCounters(pending)[3]).toBe(" asked:   0 once  0 always  0 reject  2 pending")
-    expect(formatCounters(emptyCounters())[3]).not.toContain("pending")
+  test("the error metric is red only when non-zero", () => {
+    expect(formatCounters(emptyCounters())[1].segments[1]).toEqual({ text: "   0 x", role: "muted" })
+    expect(formatCounters(populated)[1].segments[1]).toEqual({ text: "   3 x", role: "error" })
   })
 
   test("wait formats to one decimal of a second", () => {
-    expect(formatCounters({ ...emptyCounters(), waitMs: 1_000 })[5]).toBe(" wait:    1.0s")
-    expect(formatCounters({ ...emptyCounters(), waitMs: 123_456 })[5]).toBe(" wait:    123.5s")
+    expect(formatCounters({ ...emptyCounters(), waitMs: 1_000 })[2].segments[0].text).toBe("1.0s")
+    expect(formatCounters({ ...emptyCounters(), waitMs: 123_456 })[2].segments[0].text).toBe("123.5s")
   })
 })

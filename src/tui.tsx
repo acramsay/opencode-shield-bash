@@ -1,39 +1,39 @@
 import { Plugin } from "@opencode/plugin/tui"
+import type { RGBA } from "@opentui/core"
 import { createEffect, createSignal, onCleanup } from "solid-js"
 import { emptyCounters, type Counters } from "./lib"
 import { ShieldBash } from "./rpc"
 
-// Fixed order keeps the line stable as error kinds come and go.
-const ERROR_KIND_ORDER = ["timeout", "inference", "invalid-verdict"]
+export type SummaryRole = "allow" | "deny" | "ask" | "error" | "muted"
+export type SummarySegment = { text: string; role: SummaryRole }
 
-function formatCategories(byCategory: Record<string, number>): string {
-  const categories = Object.keys(byCategory).sort()
-  if (categories.length === 0) return "none"
-  return categories.map((category) => `${category}×${byCategory[category]}`).join(" ")
-}
-
-function formatErrors(byKind: Record<string, number>): string {
-  const kinds = Object.keys(byKind).sort((a, b) => {
-    const ai = ERROR_KIND_ORDER.indexOf(a)
-    const bi = ERROR_KIND_ORDER.indexOf(b)
-    if (ai === -1 && bi === -1) return a.localeCompare(b)
-    if (ai === -1) return 1
-    if (bi === -1) return -1
-    return ai - bi
-  })
-  if (kinds.length === 0) return "none"
-  return kinds.map((kind) => `${byKind[kind]} ${kind}`).join("  ")
-}
-
-export function formatCounters(counters: Counters): string[] {
-  const pending = counters.askPending > 0 ? `  ${counters.askPending} pending` : ""
+export function formatSummary(counters: Counters): SummarySegment[] {
   return [
-    ` ${counters.allow} ✓   ${counters.deny} ✕   ${counters.ask} ?`,
-    ` cached:  ${counters.allowCached}✓  ${counters.denyCached}✕`,
-    ` denied:  ${formatCategories(counters.denyByCategory)}`,
-    ` asked:   ${counters.askOnce} once  ${counters.askAlways} always  ${counters.askReject} reject${pending}`,
-    ` errors:  ${formatErrors(counters.errorByKind)}`,
-    ` wait:    ${(counters.waitMs / 1000).toFixed(1)}s`,
+    { text: `${counters.allow} ✓`, role: "allow" },
+    { text: `   ${counters.deny} 🛡`, role: "deny" },
+  ]
+}
+
+export type CounterLine = { label: string; segments: SummarySegment[] }
+
+export function formatCounters(counters: Counters): CounterLine[] {
+  const errors = Object.values(counters.errorByKind).reduce((sum, n) => sum + n, 0)
+  return [
+    {
+      label: "Cached",
+      segments: [
+        { text: `${counters.allowCached} ✓`, role: "allow" },
+        { text: `   ${counters.denyCached} 🛡`, role: "deny" },
+      ],
+    },
+    {
+      label: "Questions & Errors",
+      segments: [
+        { text: `${counters.ask} ?`, role: "ask" },
+        { text: `   ${errors} x`, role: errors > 0 ? "error" : "muted" },
+      ],
+    },
+    { label: "Wait Time", segments: [{ text: `${(counters.waitMs / 1000).toFixed(1)}s`, role: "muted" }] },
   ]
 }
 
@@ -85,14 +85,44 @@ export default Plugin.define({
       onCleanup(unsubscribe)
 
       const lines = () => formatCounters(counters() ?? emptyCounters())
+      const summary = () => formatSummary(counters() ?? emptyCounters())
+
+      const summaryColor = (role: SummaryRole): RGBA => {
+        switch (role) {
+          case "allow":
+            return context.theme.text.feedback.success.base
+          case "error":
+            return context.theme.text.feedback.error.base
+          default:
+            return context.theme.text.muted
+        }
+      }
+
+      // @opentui/solid reads span colors from style.fg (a bare fg prop is ignored),
+      // and its SpanProps type omits the field.
+      const metrics = (segments: SummarySegment[]) => (
+        <text>
+          {segments.map((segment) => (
+            <span {...{ style: { fg: summaryColor(segment.role) } }}>{segment.text}</span>
+          ))}
+        </text>
+      )
 
       return (
         <box flexDirection="column" width="100%">
-          <text>🛡 shield-bash</text>
+          <box flexDirection="row" justifyContent="space-between" width="100%">
+            <text style={{ fg: context.theme.text.base }}>Shield Bash</text>
+            {failed() ? null : metrics(summary())}
+          </box>
           {failed() ? (
-            <text>  stats unavailable</text>
+            <text style={{ fg: context.theme.text.muted }}>  stats unavailable</text>
           ) : (
-            lines().map((line) => <text>{line}</text>)
+            lines().map((line) => (
+              <box flexDirection="row" justifyContent="space-between" width="100%" paddingLeft={1}>
+                <text style={{ fg: context.theme.text.muted }}>{line.label}</text>
+                {metrics(line.segments)}
+              </box>
+            ))
           )}
         </box>
       )
