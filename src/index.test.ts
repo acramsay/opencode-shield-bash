@@ -99,6 +99,9 @@ const makeCtx = (sessions: Record<string, FakeSession>, opts: FakeOptions = {}) 
       return { dispose: async () => {} }
     },
   }
+  const rpc = {
+    register: async () => ({ events: { emit: async () => {} }, dispose: async () => {} }),
+  }
   const event = {
     subscribe: ({ signal }: { signal: AbortSignal }) => ({
       [Symbol.asyncIterator]() {
@@ -124,6 +127,7 @@ const makeCtx = (sessions: Record<string, FakeSession>, opts: FakeOptions = {}) 
     session,
     permission,
     tool,
+    rpc,
     event,
   }
   return { ctx, state, emit, contextHandlers, permissionHandlers, beforeHandlers, afterHandlers }

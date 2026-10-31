@@ -1,6 +1,7 @@
 import type { Plugin } from "@opencode/plugin"
 import { createJudge } from "./judge"
 import { parseConfig, POLICY_PROMPT } from "./lib"
+import { registerShieldBash } from "./rpc"
 
 const ID = "shield-bash"
 
@@ -12,7 +13,13 @@ const JUDGE_UNAVAILABLE = "shield-bash: judge unavailable; confirm manually"
 
 export async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup> {
   const config = parseConfig(ctx.options)
-  const judge = createJudge(ctx, config)
+  const rpc = await registerShieldBash(ctx, config.dbPath)
+  const judge = createJudge(ctx, config, (rootID, counters) => {
+    // The judge keeps mutating this object, so snapshot it for the payload.
+    void rpc.events
+      .emit("verdict", { rootID, counters: structuredClone(counters) })
+      .catch(() => {})
+  })
 
   // The judge runs as an ordinary session, but must not inherit the host's
   // agent prompt or tools. The context hook replaces the system prompt with the
@@ -94,6 +101,7 @@ export async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup> {
     controller.abort()
     await subscription
     judge.close()
+    await rpc.dispose()
   }
 }
 
