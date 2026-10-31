@@ -131,7 +131,7 @@ const makeCtx = (sessions: Record<string, FakeSession>, opts: FakeOptions = {}) 
 
 const initPlugin = async (sessions: Record<string, FakeSession>, opts: FakeOptions = {}) => {
   const dir = mkdtempSync(join(tmpdir(), "shield-bash-test-"))
-  const made = makeCtx(sessions, { ...opts, options: { cachePath: join(dir, "verdicts.db"), ...(opts.options ?? {}) } })
+  const made = makeCtx(sessions, { ...opts, options: { dbPath: join(dir, "sqlite.db"), ...(opts.options ?? {}) } })
   await setup(made.ctx as unknown as Plugin.Context)
   return made
 }
@@ -318,6 +318,65 @@ describe("verdict handling", () => {
     )
     await expect(gate(beforeHandlers[0], "rm -rf /", "root-1")).rejects.toThrow(/DG1[\s\S]*rm -rf \/[\s\S]*rm \.\/x/)
   })
+
+  test("an ask verdict passes the gate and shows the judge's reason", async () => {
+    const { beforeHandlers, permissionHandlers } = await initPlugin(
+      { "root-1": {} },
+      { verdictText: '{"decision":"ask","reason":"looks risky"}' },
+    )
+    await expect(gate(beforeHandlers[0], "weird", "root-1", "call-1")).resolves.toBeUndefined()
+
+    const evaluation = { source: { type: "tool", id: "call-1" }, effect: "allow", message: undefined as string | undefined }
+    permissionHandlers[0](evaluation)
+    expect(evaluation.effect).toBe("ask")
+    expect(evaluation.message).toBe("looks risky")
+  })
+
+  test("a cached verdict lets the command through without re-judging", async () => {
+    const { state, beforeHandlers } = await initPlugin({ "root-1": {} })
+    await gate(beforeHandlers[0], "ls -la", "root-1")
+    await gate(beforeHandlers[0], "ls -la", "root-1")
+    expect(state.prompts).toBe(1)
+  })
+})
+
+describe("ask lifecycle", () => {
+  test("an ask resolved with always caches the decision", async () => {
+    const { state, beforeHandlers, emit } = await initPlugin(
+      { "root-1": {} },
+      { verdictText: '{"decision":"ask","reason":"r"}' },
+    )
+    await gate(beforeHandlers[0], "weird", "root-1", "call-1")
+    emit({ type: "permission.asked", data: { id: "req-1", sessionID: "root-1", source: { type: "tool", id: "call-1" } } })
+    await tick()
+    emit({ type: "permission.replied", data: { sessionID: "root-1", requestID: "req-1", reply: "always" } })
+    await tick()
+
+    // The replay is served from the dedup cache, so no second judge prompt.
+    await gate(beforeHandlers[0], "weird", "root-1", "call-2")
+    expect(state.prompts).toBe(1)
+  })
+
+  test("an ask resolved with reject caches a deny", async () => {
+    const { beforeHandlers, emit } = await initPlugin(
+      { "root-1": {} },
+      { verdictText: '{"decision":"ask","reason":"r"}' },
+    )
+    await gate(beforeHandlers[0], "weird", "root-1", "call-1")
+    emit({ type: "permission.asked", data: { id: "req-1", sessionID: "root-1", source: { type: "tool", id: "call-1" } } })
+    await tick()
+    emit({ type: "permission.replied", data: { sessionID: "root-1", requestID: "req-1", reply: "reject" } })
+    await tick()
+
+    await expect(gate(beforeHandlers[0], "weird", "root-1", "call-2")).rejects.toThrow("denied")
+  })
+
+  test("a reply for an unknown request is a no-op", async () => {
+    const { beforeHandlers, emit } = await initPlugin({ "root-1": {} })
+    emit({ type: "permission.replied", data: { sessionID: "root-1", requestID: "ghost", reply: "always" } })
+    await tick()
+    await expect(gate(beforeHandlers[0], "ls", "root-1")).resolves.toBeUndefined()
+  })
 })
 
 describe("failure modes", () => {
@@ -351,5 +410,22 @@ describe("failure modes", () => {
     permissionHandlers[0](evaluation)
     expect(evaluation.effect).toBe("allow")
     expect(evaluation.message).toBeUndefined()
+  })
+
+  test("the flagged ask is consumed once", async () => {
+    const { beforeHandlers, permissionHandlers } = await initPlugin(
+      { "root-1": {} },
+      { failPrompt: true, options: { failure: "ask" } },
+    )
+    await gate(beforeHandlers[0], "ls", "root-1", "call-1")
+
+    const first = { source: { type: "tool", id: "call-1" }, effect: "allow", message: undefined as string | undefined }
+    permissionHandlers[0](first)
+    expect(first.effect).toBe("ask")
+
+    const second = { source: { type: "tool", id: "call-1" }, effect: "allow", message: undefined as string | undefined }
+    permissionHandlers[0](second)
+    expect(second.effect).toBe("allow")
+    expect(second.message).toBeUndefined()
   })
 })
