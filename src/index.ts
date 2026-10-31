@@ -1,6 +1,7 @@
 import type { Plugin } from "@opencode/plugin"
 import { createJudge } from "./judge"
 import { parseConfig, POLICY_PROMPT } from "./lib"
+import { registerShieldBash } from "./rpc"
 
 const ID = "shield-bash"
 
@@ -8,9 +9,21 @@ const ID = "shield-bash"
 // Gate both names so neither shell surface bypasses the judge.
 const SHELL_TOOLS = new Set(["shell", "bash"])
 
+const JUDGE_UNAVAILABLE = "shield-bash: judge unavailable; confirm manually"
+
 export async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup> {
   const config = parseConfig(ctx.options)
-  const judge = createJudge(ctx, config)
+  const rpc = await registerShieldBash(ctx, config.dbPath)
+  const judge = createJudge(ctx, config, (rootID, counters) => {
+    // The judge keeps mutating this object, so snapshot it for the payload.
+    void rpc.events
+      .emit("verdict", { rootID, counters: structuredClone(counters) })
+      .catch(() => {})
+  })
+
+  // Fire-and-forget: the sweep must never delay startup, and a failure just
+  // leaves the rows for the next run.
+  void judge.reconcile().catch(() => {})
 
   // The judge runs as an ordinary session, but must not inherit the host's
   // agent prompt or tools. The context hook replaces the system prompt with the
@@ -22,15 +35,19 @@ export async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup> {
     event.options.temperature = 0
   })
 
-  // failure:"ask" has no direct tool-hook equivalent, so execute.before flags
-  // the call and the permission hook upgrades it to a real ask. A config rule
-  // that hard-denies shell stays final: the hook never runs for it.
-  const askHandoff = new Set<string>()
+  // An ask has no direct tool-hook equivalent, so execute.before flags the call
+  // and the permission hook turns it into a real ask. The map carries the prompt
+  // text to show. A config rule that hard-denies shell wins, since the hook never
+  // runs for it.
+  const askHandoff = new Map<string, string>()
   await ctx.permission.hook("evaluate", (event) => {
     const callID = event.source?.type === "tool" ? event.source.id : undefined
-    if (!callID || !askHandoff.has(callID)) return
+    if (!callID) return
+    const message = askHandoff.get(callID)
+    if (message === undefined) return
     event.effect = "ask"
-    event.message = "shield-bash: judge unavailable; confirm manually"
+    event.message = message
+    askHandoff.delete(callID) // consume-once
   })
 
   await ctx.tool.hook("execute.before", async (event) => {
@@ -43,23 +60,32 @@ export async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup> {
     const command = readCommand(event.input)
     if (command === null) return
 
-    let verdict
-    try {
-      verdict = await judge.decide(event.sessionID, command)
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err)
-      if (config.failure === "allow") return
-      if (config.failure === "ask") {
-        askHandoff.add(event.id)
-        return
+    const decision = await judge.decide(event.sessionID, command)
+
+    if (decision.outcome === "allow") return
+
+    if (decision.outcome === "deny") {
+      if (decision.errorKind || !decision.verdict) {
+        throw new Error(
+          `shield-bash denied (judge unavailable, fail-closed).\nDetail: ${decision.errorKind ?? "unknown error"}`,
+        )
       }
-      throw new Error(`shield-bash denied (judge unavailable, fail-closed).\nDetail: ${reason}`)
+      const { category, reason, alternative } = decision.verdict
+      const categoryLine = category ? `\nCategory: ${category}` : ""
+      const alternativeLine = alternative ? `\nAlternative: ${alternative}` : ""
+      throw new Error(`shield-bash denied.${categoryLine}\nReason: ${reason}${alternativeLine}`)
     }
-    if (verdict.decision === "deny") {
-      const category = verdict.category ? `\nCategory: ${verdict.category}` : ""
-      const alternative = verdict.alternative ? `\nAlternative: ${verdict.alternative}` : ""
-      throw new Error(`shield-bash denied.${category}\nReason: ${verdict.reason}${alternative}`)
-    }
+
+    judge.trackAsk(event.id, {
+      rowId: decision.rowId,
+      rootID: decision.rootID,
+      command,
+      sessionID: event.sessionID,
+    })
+    askHandoff.set(
+      event.id,
+      decision.errorKind ? JUDGE_UNAVAILABLE : decision.verdict?.reason.trim() || JUDGE_UNAVAILABLE,
+    )
   })
 
   await ctx.tool.hook("execute.after", (event) => {
@@ -70,6 +96,8 @@ export async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup> {
   const subscription = (async () => {
     for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
       if (event.type === "session.deleted") judge.deleteSession(event.data.sessionID)
+      else if (event.type === "permission.asked") judge.onPermissionAsked(event.data)
+      else if (event.type === "permission.replied") judge.onPermissionReplied(event.data)
     }
   })().catch(() => {})
 
@@ -77,6 +105,7 @@ export async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup> {
     controller.abort()
     await subscription
     judge.close()
+    await rpc.dispose()
   }
 }
 

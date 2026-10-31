@@ -1,11 +1,11 @@
 import { Database } from "bun:sqlite"
 import { mkdirSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { z } from "zod"
 
 export type Verdict = {
-  decision: "allow" | "deny"
+  decision: "allow" | "deny" | "ask"
   category: string | null
   reason: string
   alternative: string | null
@@ -21,6 +21,8 @@ export const POLICY_PROMPT = [
   "Judge whether the bash command below is safe for a coding agent to run unattended. Return ONE JSON object, nothing else:",
   '- ok: {"decision":"allow"}',
   '- unsafe: {"decision":"deny","category":"DG1..DG8","reason":"one line","alternative":"safer command or null"}',
+  '- risky but unclassified: {"decision":"ask","reason":"one line"}',
+  "Ask only when the command looks risky yet genuinely matches no DG1–DG8 category. Never use ask as a default: normal developer ops are allowed.",
   "",
   "## VIOLATES — deny categories",
   "DG1 destructive unlink: destructive verbs (rm -rf/-r, find -delete, shred) scoped to a home (`~/...`, `/home/...`, `/Users/...`), bare-root (`/`), or an indiscriminate pattern. `~` always means home.",
@@ -67,8 +69,7 @@ export const OptionsSchema = z.strictObject({
   modelID: z.string().min(1),
   failure: z.enum(["allow", "deny", "ask"]).default("deny"),
   timeoutMs: z.number().int().positive().default(10_000),
-  cachePath: z.string().min(1).optional(),
-  ttlHours: z.number().positive().default(24),
+  dbPath: z.string().min(1).optional(),
 })
 
 export type ShieldBashConfig = {
@@ -76,8 +77,7 @@ export type ShieldBashConfig = {
   modelID: string
   failure: "allow" | "deny" | "ask"
   timeoutMs: number
-  cachePath: string
-  cacheTtlMs: number
+  dbPath: string
 }
 
 export function parseConfig(raw: unknown): ShieldBashConfig {
@@ -100,88 +100,231 @@ export function parseConfig(raw: unknown): ShieldBashConfig {
     modelID: options.modelID,
     failure: options.failure,
     timeoutMs: options.timeoutMs,
-    cachePath: options.cachePath ?? join(cacheRoot, "verdicts.db"),
-    cacheTtlMs: options.ttlHours * 3_600_000,
+    dbPath: options.dbPath ?? join(cacheRoot, "sqlite.db"),
   }
 }
 
-// Global cap across all sessions, guarding against rows that outlive their
-// session (e.g. a crash that never emits session.deleted). Normal cleanup
-// happens per-session via deleteSessionVerdicts.
-const MAX_CACHE_ROWS = 1000
+export const SQLITE_BUSY_TIMEOUT_MS = 5000
 
-type VerdictRow = {
-  decision: string
-  category: string | null
-  reason: string
-  alternative: string | null
-  ts: number
+export type Counters = {
+  allow: number
+  deny: number
+  ask: number
+  allowCached: number
+  denyCached: number
+  askOnce: number
+  askAlways: number
+  askReject: number
+  askPending: number
+  denyByCategory: Record<string, number>
+  errorByKind: Record<string, number>
+  waitMs: number
 }
 
-export function openCache(path: string): Database {
-  mkdirSync(dirname(path), { recursive: true })
-  const db = new Database(path, { create: true })
+export function emptyCounters(): Counters {
+  return {
+    allow: 0,
+    deny: 0,
+    ask: 0,
+    allowCached: 0,
+    denyCached: 0,
+    askOnce: 0,
+    askAlways: 0,
+    askReject: 0,
+    askPending: 0,
+    denyByCategory: {},
+    errorByKind: {},
+    waitMs: 0,
+  }
+}
+
+export type ShieldEvent = {
+  sessionID: string
+  command: string
+  ts: number
+  outcome: Verdict["decision"]
+  cached: 0 | 1
+  resolution?: "once" | "always" | "reject" | null
+  category?: string | null
+  reason?: string | null
+  alternative?: string | null
+  errorKind?: string | null
+  waitMs?: number
+}
+
+// One handle per resolved path, so repeated openDb calls in this plugin instance
+// reuse a connection. Each location loads its own module instance and so does not
+// share one; WAL plus busy_timeout cover contention between them.
+const handles = new Map<string, Database>()
+
+export function openDb(path: string): Database {
+  const resolved = resolve(path)
+  const existing = handles.get(resolved)
+  if (existing) return existing
+  mkdirSync(dirname(resolved), { recursive: true })
+  const db = new Database(resolved, { create: true })
   db.run("PRAGMA journal_mode = WAL")
+  db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`)
   db.run(
-    `CREATE TABLE IF NOT EXISTS verdicts (
-      session_id TEXT NOT NULL,
-      command TEXT NOT NULL,
-      decision TEXT NOT NULL,
-      category TEXT,
-      reason TEXT NOT NULL,
+    `CREATE TABLE IF NOT EXISTS shield_events (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id  TEXT    NOT NULL,
+      command     TEXT    NOT NULL,
+      ts          INTEGER NOT NULL,
+      outcome     TEXT    NOT NULL,
+      cached      INTEGER NOT NULL DEFAULT 0,
+      resolution  TEXT,
+      category    TEXT,
+      reason      TEXT,
       alternative TEXT,
-      ts INTEGER NOT NULL,
-      PRIMARY KEY (session_id, command)
+      error_kind  TEXT,
+      wait_ms     INTEGER NOT NULL DEFAULT 0
     )`,
   )
-  db.run("CREATE INDEX IF NOT EXISTS verdicts_ts ON verdicts (ts)")
+  db.run("CREATE INDEX IF NOT EXISTS shield_events_session        ON shield_events (session_id)")
+  db.run("CREATE INDEX IF NOT EXISTS shield_events_session_cached ON shield_events (session_id, cached)")
+  db.run("DROP TABLE IF EXISTS verdicts")
+  handles.set(resolved, db)
   return db
 }
 
-// Verdicts are scoped to the root session (subagents share their root's
-// judge, so they share its cache too). A miss or an expired row returns
-// null; an expired row is deleted on read rather than left for the cap.
-export function getCachedVerdict(
-  db: Database,
-  sessionID: string,
-  command: string,
-  ttlMs: number,
-): Verdict | null {
-  const row = db
-    .query<VerdictRow, [string, string]>(
-      "SELECT decision, category, reason, alternative, ts FROM verdicts WHERE session_id = ? AND command = ?",
+export function recordEvent(db: Database, event: ShieldEvent): number {
+  const result = db
+    .query(
+      `INSERT INTO shield_events
+        (session_id, command, ts, outcome, cached, resolution, category, reason, alternative, error_kind, wait_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .get(sessionID, command)
-  if (!row) return null
-  if (Date.now() - row.ts > ttlMs) {
-    db.query("DELETE FROM verdicts WHERE session_id = ? AND command = ?").run(sessionID, command)
-    return null
-  }
-  return {
-    decision: row.decision as Verdict["decision"],
-    category: row.category,
-    reason: row.reason,
-    alternative: row.alternative,
-  }
+    .run(
+      event.sessionID,
+      event.command,
+      event.ts,
+      event.outcome,
+      event.cached,
+      event.resolution ?? null,
+      event.category ?? null,
+      event.reason ?? null,
+      event.alternative ?? null,
+      event.errorKind ?? null,
+      event.waitMs ?? 0,
+    )
+  return Number(result.lastInsertRowid)
 }
 
-export function setCachedVerdict(db: Database, sessionID: string, command: string, verdict: Verdict): void {
-  db.query(
-    "INSERT OR REPLACE INTO verdicts (session_id, command, decision, category, reason, alternative, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
-  ).run(sessionID, command, verdict.decision, verdict.category, verdict.reason, verdict.alternative, Date.now())
-  db.run(
-    `DELETE FROM verdicts WHERE rowid IN (
-      SELECT rowid FROM verdicts ORDER BY ts ASC
-      LIMIT MAX(0, (SELECT COUNT(*) FROM verdicts) - ${MAX_CACHE_ROWS})
-    )`,
-  )
+export function setEventResolution(
+  db: Database,
+  id: number,
+  resolution: "once" | "always" | "reject",
+): void {
+  db.query("UPDATE shield_events SET resolution = ? WHERE id = ?").run(resolution, id)
 }
 
-// Called on the session.deleted event so a root session's verdicts don't
-// outlive it. Deleting by a subagent's id is a harmless no-op: subagents
-// never own rows, since caching is keyed by their root's session id.
-export function deleteSessionVerdicts(db: Database, sessionID: string): void {
-  db.query("DELETE FROM verdicts WHERE session_id = ?").run(sessionID)
+type CounterRow = {
+  outcome: string
+  cached: number
+  resolution: string | null
+  category: string | null
+  error_kind: string | null
+  n: number
+  wait: number | null
+}
+
+// The GROUP BY keeps this to one row per distinct (outcome, cached, resolution,
+// category, error_kind).
+export function loadCounters(db: Database, sessionID: string): Counters {
+  const rows = db
+    .query<CounterRow, [string]>(
+      `SELECT outcome, cached, resolution, category, error_kind, COUNT(*) AS n, SUM(wait_ms) AS wait
+       FROM shield_events WHERE session_id = ?
+       GROUP BY outcome, cached, resolution, category, error_kind`,
+    )
+    .all(sessionID)
+  const counters = emptyCounters()
+  for (const row of rows) {
+    if (row.outcome === "allow") {
+      if (row.cached === 1) counters.allowCached += row.n
+      else counters.allow += row.n
+    } else if (row.outcome === "deny") {
+      if (row.cached === 1) counters.denyCached += row.n
+      else counters.deny += row.n
+    } else if (row.outcome === "ask") {
+      counters.ask += row.n
+      if (row.resolution === null) counters.askPending += row.n
+      else if (row.resolution === "once") counters.askOnce += row.n
+      else if (row.resolution === "always") counters.askAlways += row.n
+      else if (row.resolution === "reject") counters.askReject += row.n
+    }
+    if (row.category !== null) {
+      counters.denyByCategory[row.category] = (counters.denyByCategory[row.category] ?? 0) + row.n
+    }
+    if (row.error_kind !== null) {
+      counters.errorByKind[row.error_kind] = (counters.errorByKind[row.error_kind] ?? 0) + row.n
+    }
+    counters.waitMs += row.wait ?? 0
+  }
+  return counters
+}
+
+type DedupRow = {
+  command: string
+  outcome: string
+  resolution: string | null
+  category: string | null
+  reason: string | null
+  alternative: string | null
+}
+
+// Only rows that define a definitive verdict are eligible. Ordered by id, so a
+// later write for the same command overwrites the earlier one.
+export function loadDedup(db: Database, sessionID: string): Map<string, Verdict> {
+  const rows = db
+    .query<DedupRow, [string]>(
+      `SELECT command, outcome, resolution, category, reason, alternative
+       FROM shield_events
+       WHERE session_id = ? AND cached = 0 AND (
+         (outcome IN ('allow','deny') AND error_kind IS NULL)
+         OR (outcome = 'ask' AND resolution IN ('always','reject'))
+       )
+       ORDER BY id ASC`,
+    )
+    .all(sessionID)
+  const dedup = new Map<string, Verdict>()
+  for (const row of rows) {
+    if (row.outcome === "ask") {
+      if (row.resolution === "always") {
+        dedup.set(row.command, { decision: "allow", category: null, reason: "", alternative: null })
+      } else if (row.resolution === "reject") {
+        dedup.set(row.command, { decision: "deny", category: null, reason: "", alternative: null })
+      }
+    } else {
+      dedup.set(row.command, {
+        decision: row.outcome as "allow" | "deny",
+        category: row.category,
+        reason: row.reason ?? "",
+        alternative: row.alternative,
+      })
+    }
+  }
+  return dedup
+}
+
+export function deleteSessionEvents(db: Database, sessionID: string): void {
+  db.query("DELETE FROM shield_events WHERE session_id = ?").run(sessionID)
+}
+
+export function listRecordedSessions(db: Database): string[] {
+  const rows = db
+    .query<{ session_id: string }, []>("SELECT DISTINCT session_id FROM shield_events")
+    .all()
+  return rows.map((row) => row.session_id)
+}
+
+export function pruneOrphanEvents(db: Database, liveSessionIds: readonly string[]): number {
+  if (liveSessionIds.length === 0) return db.query("DELETE FROM shield_events").run().changes
+  const placeholders = liveSessionIds.map(() => "?").join(", ")
+  return db
+    .query(`DELETE FROM shield_events WHERE session_id NOT IN (${placeholders})`)
+    .run(...liveSessionIds).changes
 }
 
 const readJsonObject = (text: string, start: number): string | null => {
@@ -207,14 +350,16 @@ const readJsonObject = (text: string, start: number): string | null => {
 }
 
 const asVerdict = (parsed: Record<string, unknown>): Verdict => {
-  if (parsed.decision !== "allow" && parsed.decision !== "deny") {
-    throw new Error(`unexpected decision value: ${String(parsed.decision)}`)
+  const decision = parsed.decision
+  if (decision !== "allow" && decision !== "deny" && decision !== "ask") {
+    throw new Error(`unexpected decision value: ${String(decision)}`)
   }
-  if (parsed.decision === "deny" && typeof parsed.reason !== "string") {
-    throw new Error("deny verdict missing reason")
+  // allow carries nothing; deny and ask must say why.
+  if (decision !== "allow" && typeof parsed.reason !== "string") {
+    throw new Error(`${decision} verdict missing reason`)
   }
   return {
-    decision: parsed.decision,
+    decision,
     category: typeof parsed.category === "string" ? parsed.category : null,
     reason: typeof parsed.reason === "string" ? parsed.reason : "",
     alternative: typeof parsed.alternative === "string" ? parsed.alternative : null,

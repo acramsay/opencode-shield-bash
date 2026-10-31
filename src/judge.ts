@@ -1,29 +1,77 @@
-import type { Database } from "bun:sqlite"
 import type { Plugin } from "@opencode/plugin"
 import {
-  deleteSessionVerdicts,
-  getCachedVerdict,
-  openCache,
+  deleteSessionEvents,
+  emptyCounters,
+  listRecordedSessions,
+  loadCounters,
+  loadDedup,
+  openDb,
   parseVerdictText,
-  setCachedVerdict,
+  recordEvent,
+  setEventResolution,
+  type Counters,
   type ShieldBashConfig,
   type Verdict,
 } from "./lib"
 
+export type Decision = {
+  outcome: "allow" | "deny" | "ask"
+  verdict?: Verdict
+  errorKind?: string
+  rowId: number
+  rootID: string
+}
+
+export type PendingAsk = {
+  toolCallId: string
+  rowId: number
+  rootID: string
+  command: string
+  sessionID: string
+}
+
 export type Judge = {
   isJudgeSession(sessionID: string): boolean
-  decide(sessionID: string, command: string): Promise<Verdict>
+  decide(sessionID: string, command: string): Promise<Decision>
+  trackAsk(toolCallId: string, record: Omit<PendingAsk, "toolCallId">): void
+  onPermissionAsked(event: { id: string; source?: { type: "tool"; id: string } }): void
+  onPermissionReplied(event: { requestID: string; reply: "once" | "always" | "reject" }): void
   deleteSession(sessionID: string): void
+  reconcile(): Promise<void>
   close(): void
 }
 
 type ContextMessage = Awaited<ReturnType<Plugin.Context["session"]["context"]>>[number]
 
+type RootState = {
+  counters: Counters
+  dedup: Map<string, Verdict>
+  hydrated: boolean
+}
+
 const JUDGE_TITLE = "Shield Bash"
 const JUDGE_INSTRUCTIONS = "Return the JSON verdict."
 
-export function createJudge(ctx: Plugin.Context, config: ShieldBashConfig): Judge {
-  const cache: Database = openCache(config.cachePath)
+// Both mark failures we detect ourselves, distinct from an inference error
+// reported by the API.
+class JudgeTimeoutError extends Error {}
+class InvalidVerdictError extends Error {}
+
+// The client rethrows a declared 404 as a plain Error carrying the server's
+// `_tag` and copying it onto `name`, so the error class itself is not available
+// here.
+const isSessionNotFound = (err: unknown): boolean => {
+  if (typeof err !== "object" || err === null) return false
+  const tagged = err as { _tag?: unknown; name?: unknown }
+  return tagged._tag === "SessionNotFoundError" || tagged.name === "SessionNotFoundError"
+}
+
+export function createJudge(
+  ctx: Plugin.Context,
+  config: ShieldBashConfig,
+  onEvent?: (rootID: string, counters: Counters) => void,
+): Judge {
+  const db = openDb(config.dbPath)
 
   // Every root session gets its own judge child; sessions with a parent
   // (subagents) share their root's judge. Both maps memoize in-flight
@@ -35,10 +83,34 @@ export function createJudge(ctx: Plugin.Context, config: ShieldBashConfig): Judg
   // would deadlock. It is denied outright instead, and the context hook keys
   // the policy injection off this set.
   const judgeSessions = new Set<string>()
-  // Prompts must go one at a time: the server queues concurrent prompts on one
+  // Prompts must go one at a time. The server queues concurrent prompts on one
   // session and hands every caller the same final message, which would unpair
   // a verdict from its command.
   const promptChain = new Map<string, Promise<unknown>>()
+
+  // Live per-root state, hydrated from the DB on first touch and kept for the
+  // process lifetime (no TTL, no cap).
+  const states = new Map<string, RootState>()
+  const pendingByToolCall = new Map<string, PendingAsk>()
+  const pendingByRequest = new Map<string, PendingAsk>()
+
+  const emit = (rootID: string, state: RootState): void => {
+    onEvent?.(rootID, state.counters)
+  }
+
+  const getState = (rootID: string): RootState => {
+    let state = states.get(rootID)
+    if (!state) {
+      state = { counters: emptyCounters(), dedup: new Map(), hydrated: false }
+      states.set(rootID, state)
+    }
+    if (!state.hydrated) {
+      state.counters = loadCounters(db, rootID)
+      state.dedup = loadDedup(db, rootID)
+      state.hydrated = true
+    }
+    return state
+  }
 
   // Walks the session's parent chain to its root, memoizing every hop.
   const rootOf = (sessionID: string): Promise<string> => {
@@ -125,8 +197,8 @@ export function createJudge(ctx: Plugin.Context, config: ShieldBashConfig): Judg
         sessionID: judgeID,
         text: `Command: ${command}\n${JUDGE_INSTRUCTIONS}`,
       })
-      // SessionWaitInput carries no timeout, so bound the wait and interrupt
-      // the run on expiry rather than leaving it burning tokens.
+      // SessionWaitInput carries no timeout, so bound the wait and interrupt the
+      // run on expiry.
       let timer: ReturnType<typeof setTimeout> | undefined
       try {
         await Promise.race([
@@ -134,41 +206,193 @@ export function createJudge(ctx: Plugin.Context, config: ShieldBashConfig): Judg
           new Promise<never>((_, reject) => {
             timer = setTimeout(() => {
               void ctx.session.interrupt({ sessionID: judgeID }).catch(() => {})
-              reject(new Error(`judge timed out after ${config.timeoutMs}ms`))
+              reject(new JudgeTimeoutError(`judge timed out after ${config.timeoutMs}ms`))
             }, config.timeoutMs)
           }),
         ])
       } finally {
         if (timer) clearTimeout(timer)
       }
-      return extractVerdict(await ctx.session.context({ sessionID: judgeID }))
+      try {
+        return extractVerdict(await ctx.session.context({ sessionID: judgeID }))
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err)
+        throw new InvalidVerdictError(reason)
+      }
     })
     promptChain.set(rootID, run)
     return run
   }
 
-  const decide = async (sessionID: string, command: string): Promise<Verdict> => {
+  const countOutcome = (state: RootState, outcome: Decision["outcome"], cached: boolean): void => {
+    if (cached) {
+      if (outcome === "allow") state.counters.allowCached++
+      else if (outcome === "deny") state.counters.denyCached++
+      return
+    }
+    if (outcome === "allow") state.counters.allow++
+    else if (outcome === "deny") state.counters.deny++
+    else {
+      state.counters.ask++
+      state.counters.askPending++
+    }
+  }
+
+  const decide = async (sessionID: string, command: string): Promise<Decision> => {
     const rootID = await rootOf(sessionID)
-    const cached = getCachedVerdict(cache, rootID, command, config.cacheTtlMs)
-    if (cached) return cached
-    const judgeID = await ensureJudgeSession(rootID)
-    const verdict = await promptJudge(rootID, judgeID, command)
-    setCachedVerdict(cache, rootID, command, verdict)
-    return verdict
+    const state = getState(rootID)
+
+    const cached = state.dedup.get(command)
+    if (cached) {
+      const rowId = recordEvent(db, {
+        sessionID: rootID,
+        command,
+        ts: Date.now(),
+        outcome: cached.decision,
+        cached: 1,
+        category: cached.category,
+        reason: cached.reason,
+        alternative: cached.alternative,
+      })
+      countOutcome(state, cached.decision, true)
+      if (cached.decision === "deny" && cached.category) {
+        state.counters.denyByCategory[cached.category] =
+          (state.counters.denyByCategory[cached.category] ?? 0) + 1
+      }
+      emit(rootID, state)
+      return { outcome: cached.decision, verdict: cached, rowId, rootID }
+    }
+
+    const started = Date.now()
+    let verdict: Verdict
+    try {
+      const judgeID = await ensureJudgeSession(rootID)
+      verdict = await promptJudge(rootID, judgeID, command)
+    } catch (err) {
+      const errorKind =
+        err instanceof JudgeTimeoutError
+          ? "timeout"
+          : err instanceof InvalidVerdictError
+            ? "invalid-verdict"
+            : "inference"
+      const waitMs = Date.now() - started
+      const outcome = config.failure
+      const rowId = recordEvent(db, {
+        sessionID: rootID,
+        command,
+        ts: Date.now(),
+        outcome,
+        cached: 0,
+        errorKind,
+        waitMs,
+      })
+      countOutcome(state, outcome, false)
+      state.counters.errorByKind[errorKind] = (state.counters.errorByKind[errorKind] ?? 0) + 1
+      state.counters.waitMs += waitMs
+      emit(rootID, state)
+      return { outcome, errorKind, rowId, rootID }
+    }
+
+    const waitMs = Date.now() - started
+    const outcome = verdict.decision
+    const rowId = recordEvent(db, {
+      sessionID: rootID,
+      command,
+      ts: Date.now(),
+      outcome,
+      cached: 0,
+      category: verdict.category,
+      reason: verdict.reason,
+      alternative: verdict.alternative,
+      waitMs,
+    })
+    countOutcome(state, outcome, false)
+    if (outcome === "deny" && verdict.category) {
+      state.counters.denyByCategory[verdict.category] =
+        (state.counters.denyByCategory[verdict.category] ?? 0) + 1
+    }
+    state.counters.waitMs += waitMs
+    // A model ask is not cached. Only a user resolution makes it definitive.
+    if (outcome !== "ask") state.dedup.set(command, verdict)
+    emit(rootID, state)
+    return { outcome, verdict, rowId, rootID }
+  }
+
+  const trackAsk = (toolCallId: string, record: Omit<PendingAsk, "toolCallId">): void => {
+    pendingByToolCall.set(toolCallId, { toolCallId, ...record })
+  }
+
+  const onPermissionAsked: Judge["onPermissionAsked"] = (event) => {
+    const callID = event.source?.type === "tool" ? event.source.id : undefined
+    if (!callID) return
+    const record = pendingByToolCall.get(callID)
+    if (record) pendingByRequest.set(event.id, record)
+  }
+
+  const onPermissionReplied: Judge["onPermissionReplied"] = (event) => {
+    const record = pendingByRequest.get(event.requestID)
+    if (!record) return
+    pendingByRequest.delete(event.requestID)
+    pendingByToolCall.delete(record.toolCallId)
+
+    const state = getState(record.rootID)
+    setEventResolution(db, record.rowId, event.reply)
+    state.counters.askPending = Math.max(0, state.counters.askPending - 1)
+    if (event.reply === "once") {
+      state.counters.askOnce++
+    } else if (event.reply === "always") {
+      state.counters.askAlways++
+      state.dedup.set(record.command, { decision: "allow", category: null, reason: "", alternative: null })
+    } else {
+      state.counters.askReject++
+      state.dedup.set(record.command, { decision: "deny", category: null, reason: "", alternative: null })
+    }
+    emit(record.rootID, state)
+  }
+
+  const dropPending = (predicate: (record: PendingAsk) => boolean): void => {
+    for (const [toolCallId, record] of pendingByToolCall) {
+      if (predicate(record)) pendingByToolCall.delete(toolCallId)
+    }
+    for (const [requestID, record] of pendingByRequest) {
+      if (predicate(record)) pendingByRequest.delete(requestID)
+    }
+  }
+
+  // A session the server no longer knows about is a crash orphan or a manual
+  // deletion, so its rows are dropped. Any other failure, such as the server
+  // being down or an auth error, must not lose data, so the rows stay for the
+  // next sweep.
+  const reconcile = async (): Promise<void> => {
+    for (const sessionID of listRecordedSessions(db)) {
+      try {
+        await ctx.session.get({ sessionID })
+      } catch (err) {
+        if (isSessionNotFound(err)) deleteSessionEvents(db, sessionID)
+      }
+    }
   }
 
   const deleteSession = (sessionID: string): void => {
-    deleteSessionVerdicts(cache, sessionID)
+    deleteSessionEvents(db, sessionID)
+    states.delete(sessionID)
     rootBySession.delete(sessionID)
     judgeByRoot.delete(sessionID)
     judgeSessions.delete(sessionID)
     promptChain.delete(sessionID)
+    dropPending((record) => record.sessionID === sessionID || record.rootID === sessionID)
   }
 
   return {
     isJudgeSession: (sessionID) => judgeSessions.has(sessionID),
     decide,
+    trackAsk,
+    onPermissionAsked,
+    onPermissionReplied,
     deleteSession,
-    close: () => cache.close(),
+    reconcile,
+    // The DB handle is shared across per-location setups, so this plugin's
+    // cleanup must not close it.
+    close: () => {},
   }
 }

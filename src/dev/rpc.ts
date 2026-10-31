@@ -1,0 +1,1 @@
+export { ShieldBash } from "../rpc"

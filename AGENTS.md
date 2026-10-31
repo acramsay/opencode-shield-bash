@@ -40,6 +40,10 @@ disables the inherited published entry; without it the published plugin wins and
 fails with `Duplicate plugin ID: shield-bash`. The `src/dev/` directory is not in `package.json`
 `files`, so it is never published.
 
+The dev directory also carries `tui.tsx` and `rpc.ts` parts. A local plugin directory resolves
+its parts by root file name (`server` else `index`, `tui`, `rpc`), so the sidebar and the RPC
+contract need all three present.
+
 V2 resolves a local plugin entry as a **directory** and loads its `index.ts`. A bare
 `@scope/name@file:.` npm spec does not work here — the loader reports `Plugin entrypoint not
 found`. Just run `opencode` from this directory; no separate setup needed.
