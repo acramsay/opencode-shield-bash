@@ -56,11 +56,17 @@ export default Plugin.define({
         }
       }
 
+      // The RPC route resolves to the server's default location unless the call
+      // names one, so a project-local install would otherwise miss its own
+      // registration. Prefer the session's location; fall back to the TUI's.
+      const location = () =>
+        context.data.session.get(props.sessionID)?.location ?? context.location
+
       const refresh = async () => {
         const root = rootID()
         if (root === null) return
         try {
-          setCounters(await rpc.stats({ rootID: root }))
+          setCounters(await rpc.stats({ rootID: root }, { location: location() }))
           setFailed(false)
         } catch {
           setFailed(true)
