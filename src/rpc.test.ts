@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import { type Counters, openDb, recordEvent } from "./lib"
-import { CountersSchema, createRpcRegistrar, ShieldBash, statsFor } from "./rpc"
+import { CountersSchema, registerShieldBash, ShieldBash, statsFor } from "./rpc"
 
 const dbPath = () => join(mkdtempSync(join(tmpdir(), "shield-bash-rpc-")), "sqlite.db")
 
@@ -69,23 +69,20 @@ describe("statsFor", () => {
   })
 })
 
-describe("createRpcRegistrar", () => {
-  test("registers once and reuses the handle across per-location setups", async () => {
-    let calls = 0
-    const fakeCtx = () =>
-      ({
-        rpc: {
-          register: async () => {
-            calls++
-            return { events: { emit: async () => {} }, dispose: async () => {} }
-          },
+describe("registerShieldBash", () => {
+  test("registers the contract and returns the handle", async () => {
+    const handle = { events: { emit: async () => {} }, dispose: async () => {} }
+    let registered: unknown
+    const ctx = {
+      rpc: {
+        register: async (def: unknown) => {
+          registered = def
+          return handle
         },
-      }) as unknown as Plugin.Context
+      },
+    } as unknown as Plugin.Context
 
-    const register = createRpcRegistrar()
-    const first = await register(fakeCtx(), dbPath())
-    const second = await register(fakeCtx(), dbPath())
-    expect(calls).toBe(1)
-    expect(second).toBe(first)
+    expect(await registerShieldBash(ctx, dbPath())).toBe(handle)
+    expect(registered).toBe(ShieldBash)
   })
 })

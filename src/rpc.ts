@@ -41,22 +41,11 @@ export function statsFor(dbPath: string, rootID: string): Counters {
   return loadCounters(openDb(dbPath), rootID)
 }
 
-// `setup` may run once per location in a single process. The host may reject a
-// second registration on the same id, so only the first call registers.
-export function createRpcRegistrar() {
-  let registration: Promise<ShieldBashRpc> | null = null
-  return function registerShieldBash(ctx: Plugin.Context, dbPath: string): Promise<ShieldBashRpc> {
-    if (registration) return registration
-    registration = ctx.rpc
-      .register(ShieldBash, {
-        stats: async ({ rootID }) => statsFor(dbPath, rootID),
-      })
-      .catch((err) => {
-        registration = null // a later setup may retry
-        throw err
-      })
-    return registration
-  }
+// `setup` runs once per location, and each location loads its own module instance,
+// so this registers unconditionally. The host accepts the same id from several
+// locations, and each location disposes only its own registration.
+export function registerShieldBash(ctx: Plugin.Context, dbPath: string): Promise<ShieldBashRpc> {
+  return ctx.rpc.register(ShieldBash, {
+    stats: async ({ rootID }) => statsFor(dbPath, rootID),
+  })
 }
-
-export const registerShieldBash = createRpcRegistrar()

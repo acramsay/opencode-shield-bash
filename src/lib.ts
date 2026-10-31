@@ -152,9 +152,9 @@ export type ShieldEvent = {
   waitMs?: number
 }
 
-// One handle per resolved path, so multiple per-location `setup` instances in a
-// process share a connection. bun:sqlite defaults to busy_timeout = 0, where a
-// contended write fails immediately.
+// One handle per resolved path, so repeated openDb calls in this plugin instance
+// reuse a connection. Each location loads its own module instance and so does not
+// share one; WAL plus busy_timeout cover contention between them.
 const handles = new Map<string, Database>()
 
 export function openDb(path: string): Database {
