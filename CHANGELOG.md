@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.1.0](https://github.com/acramsay/opencode-shield-bash/compare/v2.0.1...v2.1.0) (2026-10-31)
+
+### Features
+
+* event log metrics and TUI sidebar ([#2](https://github.com/acramsay/opencode-shield-bash/issues/2)) ([f3359f8](https://github.com/acramsay/opencode-shield-bash/commit/f3359f81e612f38770f255059a70b613ba5edc97))
+
 ## [2.0.1](https://github.com/acramsay/opencode-shield-bash/compare/v2.0.0...v2.0.1) (2026-10-06)
 
 ### Bug Fixes
