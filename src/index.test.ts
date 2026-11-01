@@ -235,7 +235,7 @@ describe("judge session lifecycle", () => {
   })
 
   test("failed judge session creation is retried on the next call", async () => {
-    const { state, beforeHandlers } = await initPlugin({ "root-1": {} }, { failFirstCreate: true })
+    const { state, beforeHandlers } = await initPlugin({ "root-1": {} }, { failFirstCreate: true, options: { failure: "deny" } })
     await expect(gate(beforeHandlers[0], "cmd-a", "root-1")).rejects.toThrow("judge unavailable")
     await gate(beforeHandlers[0], "cmd-a", "root-1")
     expect(state.creates).toBe(2)
@@ -395,8 +395,8 @@ describe("ask lifecycle", () => {
 })
 
 describe("failure modes", () => {
-  test("deny (default) fails closed when the judge is unavailable", async () => {
-    const { beforeHandlers } = await initPlugin({ "root-1": {} }, { failPrompt: true })
+  test("deny fails closed when the judge is unavailable", async () => {
+    const { beforeHandlers } = await initPlugin({ "root-1": {} }, { failPrompt: true, options: { failure: "deny" } })
     await expect(gate(beforeHandlers[0], "ls", "root-1")).rejects.toThrow("judge unavailable")
   })
 
@@ -405,11 +405,8 @@ describe("failure modes", () => {
     await expect(gate(beforeHandlers[0], "ls", "root-1")).resolves.toBeUndefined()
   })
 
-  test("ask flags the call and the permission hook upgrades it to a real ask", async () => {
-    const { beforeHandlers, permissionHandlers } = await initPlugin(
-      { "root-1": {} },
-      { failPrompt: true, options: { failure: "ask" } },
-    )
+  test("ask (default) flags the call and the permission hook upgrades it to a real ask", async () => {
+    const { beforeHandlers, permissionHandlers } = await initPlugin({ "root-1": {} }, { failPrompt: true })
     await expect(gate(beforeHandlers[0], "ls", "root-1", "call-1")).resolves.toBeUndefined()
 
     const evaluation = { source: { type: "tool", id: "call-1" }, effect: "allow", message: undefined as string | undefined }

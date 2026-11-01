@@ -58,7 +58,7 @@ loudly at startup instead of silently using a default.
 | --- | --- |
 | `providerID` | provider that serves the judge model (required) |
 | `modelID` | model that judges the commands (required) |
-| `failure` | behavior when the judge is unavailable: `deny` (default), `allow`, or `ask` |
+| `failure` | behavior when the judge is unavailable: `ask` (default), `allow`, or `deny` |
 | `timeoutMs` | how long to wait for a verdict before treating the judge as unavailable (default `10000`) |
 | `dbPath` | override the event database path (default `$XDG_CACHE_HOME/shield-bash/sqlite.db`) |
 

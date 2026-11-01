@@ -67,7 +67,7 @@ export const POLICY_PROMPT = [
 export const OptionsSchema = z.strictObject({
   providerID: z.string().min(1),
   modelID: z.string().min(1),
-  failure: z.enum(["allow", "deny", "ask"]).default("deny"),
+  failure: z.enum(["allow", "deny", "ask"]).default("ask"),
   timeoutMs: z.number().int().positive().default(10_000),
   dbPath: z.string().min(1).optional(),
 })

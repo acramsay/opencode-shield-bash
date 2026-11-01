@@ -329,7 +329,7 @@ describe("parseConfig", () => {
 
   test("applies defaults for the optional fields", () => {
     const config = parseConfig(base)
-    expect(config.failure).toBe("deny")
+    expect(config.failure).toBe("ask")
     expect(config.timeoutMs).toBe(10_000)
     expect(config.dbPath.endsWith("shield-bash/sqlite.db")).toBe(true)
   })
