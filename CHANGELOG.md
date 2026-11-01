@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.1.1](https://github.com/acramsay/opencode-shield-bash/compare/v2.1.0...v2.1.1) (2026-11-01)
+
+### Bug Fixes
+
+* change the default failure mode from deny to ask ([f126410](https://github.com/acramsay/opencode-shield-bash/commit/f126410faa7d1796c7bf22e44411db81fecc25dd))
+
 ## [2.1.0](https://github.com/acramsay/opencode-shield-bash/compare/v2.0.1...v2.1.0) (2026-10-31)
 
 ### Features
