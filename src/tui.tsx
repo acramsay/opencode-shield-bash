@@ -1,3 +1,6 @@
+// The published `./tui` entry is a precompiled copy of this file (see
+// scripts/build-tui.ts), a temporary workaround for anomalyco/opencode#39986.
+// This raw TSX stays the source of truth and the dev fallback.
 import { Plugin } from "@opencode/plugin/tui"
 import type { RGBA } from "@opentui/core"
 import { createEffect, createSignal, onCleanup } from "solid-js"

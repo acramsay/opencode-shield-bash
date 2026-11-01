@@ -8,14 +8,16 @@
   "exports": {
     ".": "./src/index.ts",
     "./rpc": "./src/rpc.ts",
-    "./tui": "./src/tui.tsx"
+    "./tui": "./src/tui.entry.mjs"
   },
   "files": [
     "src/index.ts",
     "src/judge.ts",
     "src/lib.ts",
     "src/rpc.ts",
-    "src/tui.tsx"
+    "src/tui.tsx",
+    "src/tui.entry.mjs",
+    "src/tui.compiled.tsx"
   ],
   "publishConfig": {
     "access": "public"
@@ -23,7 +25,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test src/",
-    "test:integration": "bun test test/integration.test.ts"
+    "test:integration": "bun test test/integration.test.ts",
+    "build:tui": "bun scripts/build-tui.ts",
+    "prepublishOnly": "bun run build:tui"
   },
   "keywords": [
     "opencode",
