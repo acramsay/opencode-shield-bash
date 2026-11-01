@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.1.2](https://github.com/acramsay/opencode-shield-bash/compare/v2.1.1...v2.1.2) (2026-11-01)
+
+### Bug Fixes
+
+* **tui:** load published TUI via precompiled entry ([d5fe8dd](https://github.com/acramsay/opencode-shield-bash/commit/d5fe8ddc16bdcff1e65d0139e2c147aa6bfeaf68))
+
 ## [2.1.1](https://github.com/acramsay/opencode-shield-bash/compare/v2.1.0...v2.1.1) (2026-11-01)
 
 ### Bug Fixes
